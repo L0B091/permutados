@@ -1,17 +1,29 @@
 #!/usr/bin/env bash
-# Daily logical backup with retention. Run from cron on the server, e.g.
+# Cron wrapper for scripts/backup_postgres.py (no secrets are echoed). Example crontab on the server:
 #   15 4 * * * /opt/permutados/scripts/backup_postgres.sh >> /var/log/permutados-backup.log 2>&1
-# Uses the compose postgres service; credentials come from .env (never echoed).
+# BACKUP_MODE=docker  -> pg_dump runs inside the compose "postgres" container (default when docker is present)
+# BACKUP_MODE=native  -> uses DATABASE_URL with the pg_dump on PATH (must be >= the server major version)
 set -euo pipefail
 cd "$(dirname "$0")/.."
-set -a; . ./.env; set +a
-BACKUP_DIR="${BACKUP_DIR:-./backups}"
-RETENTION="${BACKUP_RETENTION_DAYS:-14}"
-mkdir -p "$BACKUP_DIR"
-umask 077
-file="$BACKUP_DIR/permutados_$(date -u +%Y%m%dT%H%M%SZ).dump"
-docker compose exec -T postgres pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc > "$file.partial"
-mv "$file.partial" "$file"
-find "$BACKUP_DIR" -name 'permutados_*.dump' -type f -mtime +"$RETENTION" -delete
-echo "backup ok: $file"
-# Restore: docker compose exec -T postgres pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean < file.dump
+# Load .env without overriding variables already set in the environment (cron/systemd may set them).
+if [ -f .env ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ "$line" =~ ^[[:space:]]*([A-Z_][A-Z0-9_]*)=(.*)$ ]] || continue
+    key="${BASH_REMATCH[1]}"; val="${BASH_REMATCH[2]}"
+    if [[ "$val" == \"*\" || "$val" == \'*\' ]]; then
+      val="${val:1:${#val}-2}"
+    else
+      val="${val%%[[:space:]]#*}"; val="${val%"${val##*[![:space:]]}"}"  # inline comment, trailing spaces
+    fi
+    [ -n "${!key+x}" ] || export "$key=$val"
+  done < .env
+fi
+mode="${BACKUP_MODE:-}"
+if [ -z "$mode" ]; then
+  if command -v docker >/dev/null 2>&1; then mode=docker; else mode=native; fi
+fi
+if [ "$mode" = docker ]; then
+  exec python3 scripts/backup_postgres.py --docker-service "${BACKUP_DOCKER_SERVICE:-postgres}"
+else
+  exec python3 scripts/backup_postgres.py
+fi
