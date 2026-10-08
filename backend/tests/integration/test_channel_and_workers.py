@@ -62,16 +62,17 @@ def test_reconciliation_flags_posts_of_closed_items(db, make_user, publish_item,
 
 
 def test_suggestions_only_available_and_diverse(db, make_user, publish_item, admin):
-    owner, bidder = make_user(), make_user()
+    bidder = make_user()
     for i in range(6):
-        publish_item(owner, title=f"Silla {i}", category="muebles")
+        publish_item(make_user(), title=f"Silla {i}", category="muebles")
     for i in range(3):
-        publish_item(owner, title=f"Celular {i}", category="celulares")
-    reserved = publish_item(owner, title="Reservado", category="otros")
+        publish_item(make_user(), title=f"Celular {i}", category="celulares")
+    reserved = publish_item(make_user(), title="Reservado", category="otros")
     offers.create_offer(db, bidder, reserved.public_id, offer_type="MONEY", offered_price="1")
     from app.services.system import config_service as cfg
 
     cfg.set_value(db, "channel_min_score", 0)
+    cfg.set_value(db, "channel_enabled", True)
     db.commit()
     s = channel.suggestions(db, limit=6)
     codes = [x["item_id"] for x in s]

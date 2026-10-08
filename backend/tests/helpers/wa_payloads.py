@@ -61,7 +61,13 @@ def audio(wa_id: str, **kw):
     return message(wa_id, "audio", {"id": "AUDIO1", "mime_type": "audio/ogg"}, **kw)
 
 
-def status(provider_message_id: str, status_value: str, recipient: str, error_code: int | None = None):
+def status(
+    provider_message_id: str,
+    status_value: str,
+    recipient: str,
+    error_code: int | None = None,
+    callback_data: str | None = None,
+):
     st: dict[str, Any] = {
         "id": provider_message_id,
         "status": status_value,
@@ -70,4 +76,6 @@ def status(provider_message_id: str, status_value: str, recipient: str, error_co
     }
     if error_code:
         st["errors"] = [{"code": error_code, "title": "error"}]
+    if callback_data:
+        st["biz_opaque_callback_data"] = callback_data
     return _envelope({"statuses": [st]})
