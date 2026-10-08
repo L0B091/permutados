@@ -43,6 +43,7 @@ class Payment(IdMixin, TimestampMixin, Base):
     provider_checkout_id: Mapped[str | None] = mapped_column(String(128))  # e.g. MP preference id
     provider_payment_id: Mapped[str | None] = mapped_column(String(64))
     checkout_url: Mapped[str | None] = mapped_column(String(512))
+    checkout_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[PaymentStatus] = mapped_column(
         pg_enum(PaymentStatus, "payment_status"),
         nullable=False,

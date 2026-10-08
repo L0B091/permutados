@@ -130,6 +130,32 @@ class ChannelPostStatus(StrEnum):
     REMOVED = "REMOVED"
 
 
+class ItemChannelStatus(StrEnum):
+    """Channel status of an item, separate from its publication status (section 33). Derived from
+    channel_posts and maintained by the channel service; reconciliation re-checks it."""
+
+    NOT_POSTED = "NOT_POSTED"
+    QUEUED = "QUEUED"  # a post is planned (PENDING / RETRY_PENDING)
+    VISIBLE = "VISIBLE"  # posted in the Channel
+    REMOVAL_PENDING = "REMOVAL_PENDING"  # must be deleted from the Channel by the admin
+    REMOVED = "REMOVED"  # was posted, now removed (the publication itself may still be active)
+
+
+class InteractionKind(StrEnum):
+    IMPRESSION = "IMPRESSION"  # shown in search results
+    SELECTION = "SELECTION"
+    VIEW = "VIEW"
+    OFFER = "OFFER"
+
+
+class JobRunStatus(StrEnum):
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    SKIPPED = "SKIPPED"  # system mode or another replica holds the lock
+    ABANDONED = "ABANDONED"  # the worker died mid-run (recovered at restart)
+
+
 LIVE_CHANNEL_POST_STATUSES = (
     ChannelPostStatus.PENDING,
     ChannelPostStatus.SENDING,
@@ -154,6 +180,7 @@ class MessageType(StrEnum):
 
 class NotificationStatus(StrEnum):
     PENDING = "PENDING"
+    SENDING = "SENDING"  # claimed and handed to WhatsApp; outcome not yet recorded (crash recovery: see outbox)
     SENT = "SENT"
     FAILED = "FAILED"
     AWAITING_WINDOW = "AWAITING_WINDOW"  # outside the 24h window: waits until the user writes again

@@ -11,6 +11,7 @@ Lock order everywhere: item -> offer -> transaction -> payment (prevents deadloc
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -26,6 +27,7 @@ from app.core.text import clean_user_text
 from app.models.enums import (
     ACTIVE_OFFER_STATUSES,
     ActorType,
+    InteractionKind,
     ItemStatus,
     OfferCloseReason,
     OfferStatus,
@@ -39,6 +41,7 @@ from app.models.offer import Offer, Transaction
 from app.models.payment import Payment
 from app.models.user import User
 from app.services.audit.service import AuditAction, audit
+from app.services.channel import interactions
 from app.services.events.bus import EventType, get_bus
 from app.services.notifications import templates
 from app.services.notifications.service import enqueue
@@ -60,6 +63,10 @@ class OfferResult:
 
 
 # ---- lookup helpers ------------------------------------------------------------------------
+log = logging.getLogger(__name__)
+PROVIDER_PENDING_MAX_WAIT = timedelta(hours=72)
+
+
 def _lock_item(session: Session, item_id: int) -> Item:
     return session.execute(
         select(Item).where(Item.id == item_id).with_for_update().execution_options(populate_existing=True)
@@ -208,6 +215,7 @@ def create_offer(
             raise Conflict("Este artículo ya tiene una oferta activa.", code="ITEM_HAS_ACTIVE_OFFER") from e
         raise
     item.offer_count += 1
+    interactions.record(session, bidder.id, [item.id], InteractionKind.OFFER)
     transition_item(
         session,
         item,
@@ -326,11 +334,18 @@ def _close_offer(
     )
     get_bus().publish(
         session,
-        EventType.OFFER_CLOSED,
+        _CLOSE_EVENTS[status],
         aggregate_type="offer",
         aggregate_id=offer.public_id,
         payload={"status": status.value, "reason": reason.value if reason else None},
     )
+
+
+_CLOSE_EVENTS = {
+    OfferStatus.REJECTED: EventType.OFFER_REJECTED,
+    OfferStatus.EXPIRED: EventType.OFFER_EXPIRED,
+    OfferStatus.CANCELLED: EventType.OFFER_CANCELLED,
+}
 
 
 def _assert_not_paid(session: Session, offer: Offer) -> None:
@@ -635,8 +650,12 @@ def expire_pending_offers(session: Session, now=None) -> int:
     return n
 
 
-def expire_payment_windows(session: Session, now=None) -> int:
-    """Accepted offers whose bidder did not pay in time: cancel, item back to PUBLISHED."""
+def expire_payment_windows(session: Session, now=None, gateway=None) -> int:
+    """Accepted offers whose bidder did not pay in time: cancel, item back to PUBLISHED.
+
+    Before cancelling, the provider is asked (when a gateway is configured): a payment approved before the
+    deadline whose webhook was lost (downtime) must be honoured, not refunded. If Mercado Pago cannot be reached
+    the state is ambiguous, so the cancellation is postponed to a later run (never decide on ambiguity)."""
     now = now or utcnow()
     rows = (
         session.execute(
@@ -657,6 +676,23 @@ def expire_payment_windows(session: Session, now=None) -> int:
         tx = get_transaction_for_offer(session, offer.id, for_update=True)
         if tx is None or tx.status != TransactionStatus.PAYMENT_PENDING or tx.payment_due_at > now:
             continue
+        if gateway is not None:
+            from app.services.payments import service as payments
+
+            try:
+                with session.begin_nested():
+                    payments.sync_transaction_payments(session, tx, gateway)
+            except Exception:
+                log.warning("payment provider unreachable; postponing expiry of %s", tx.public_id, exc_info=True)
+                continue
+            session.refresh(tx)
+            if tx.status != TransactionStatus.PAYMENT_PENDING:
+                continue  # paid during the downtime: the payment flow released (or deferred) the contact
+            pending_at_provider = session.execute(
+                select(Payment.id).where(Payment.transaction_id == tx.id, Payment.status == PaymentStatus.PENDING)
+            ).first()
+            if pending_at_provider and now - tx.payment_due_at < PROVIDER_PENDING_MAX_WAIT:
+                continue  # in process at Mercado Pago: wait (bounded) for the final status
         approved = session.execute(
             select(Payment.id).where(Payment.transaction_id == tx.id, Payment.status == PaymentStatus.APPROVED)
         ).first()

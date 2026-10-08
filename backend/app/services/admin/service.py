@@ -71,6 +71,9 @@ def confirm_ban(session: Session, admin_id: int, user_id: int, notes: str | None
         entity_id=user.id,
         details={"notes": notes},
     )
+    from app.services.events.bus import EventType, get_bus
+
+    get_bus().publish(session, EventType.USER_BANNED, aggregate_type="user", aggregate_id=user.id)
     return user
 
 

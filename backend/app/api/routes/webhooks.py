@@ -93,7 +93,7 @@ async def whatsapp_receive(request: Request, db: Session = Depends(get_db)) -> d
     for st in parse_statuses(payload):
         if _claim(db, "whatsapp_status", f"status:{st.message_id}:{st.status}", {"status": st.status}) is None:
             continue
-        if apply_status_update(db, st.message_id, st.status, st.error_code):
+        if apply_status_update(db, st.message_id, st.status, st.error_code, callback_data=st.callback_data):
             statuses += 1
     # Messages are durably queued (webhook_events, status RECEIVED, encrypted envelope) and processed by the
     # worker (conversation.inbound_queue). Meta gets its 200 right away.

@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import AdminPrincipal, client_ip, get_db, require_role
 from app.core.errors import NotFound, ValidationFailed
-from app.models.audit import AuditLog
 from app.models.channel import ChannelPost
 from app.models.conversation import ConversationSession, Message
 from app.models.enums import (
@@ -494,41 +493,56 @@ def system_health(request: Request, db: Session = Depends(get_db), _: AdminPrinc
     out["whatsapp"] = "configured" if s.whatsapp_access_token.get_secret_value() else "not_configured"
     out["mercadopago"] = "configured" if getattr(request.app.state, "payment_gateway", None) else "not_configured"
     out["system_mode"] = cfg.current_mode(db).value
-    last_job = db.execute(
-        select(func.max(AuditLog.created_at)).where(AuditLog.actor_type == ActorType.WORKER)
-    ).scalar_one_or_none()
-    out["last_worker_activity"] = last_job.isoformat() if last_job else None
+    from app.models.worker import WorkerHeartbeat
+    from app.workers.runtime import alive_workers
+
+    alive = alive_workers(db)
+    last = db.execute(select(func.max(WorkerHeartbeat.last_seen_at))).scalar_one_or_none()
+    out["worker"] = "ok" if alive else "down"
+    out["workers_alive"] = len(alive)
+    out["last_worker_activity"] = last.isoformat() if last else None
     return out
 
 
 # ---- channel (manual administration) --------------------------------------------------------------
+@router.get("/channel/overview")
+def channel_overview(db: Session = Depends(get_db), _: AdminPrincipal = Depends(VIEWER)) -> dict:
+    """Posts by status, daily quota, last post, featured items, channel jobs and the last reconciliation report."""
+    return channel.overview(db)
+
+
 @router.get("/channel/suggestions")
 def channel_suggestions(
     limit: int = Query(10, ge=1, le=50), db: Session = Depends(get_db), _: AdminPrincipal = Depends(VIEWER)
-) -> list[dict]:
-    return channel.suggestions(db, limit)
+) -> dict:
+    """Ranked + diversified items to post by hand, respecting the daily quota and exposure limits."""
+    return channel.suggestion_report(db, limit)
 
 
 @router.get("/channel/posts")
 def channel_posts(
-    status: ChannelPostStatus | None = None, db: Session = Depends(get_db), _: AdminPrincipal = Depends(VIEWER)
+    status: ChannelPostStatus | None = None,
+    page: tuple[int, int] = Depends(_page),
+    db: Session = Depends(get_db),
+    _: AdminPrincipal = Depends(VIEWER),
 ) -> list[dict]:
-    stmt = select(ChannelPost, Item.public_id, Item.status).join(Item, Item.id == ChannelPost.item_id)
+    from app.core.clock import utcnow
+
+    limit, offset = page
+    stmt = select(ChannelPost, Item).join(Item, Item.id == ChannelPost.item_id)
     if status:
         stmt = stmt.where(ChannelPost.status == status)
+    now = utcnow()
     return [
-        {
-            "id": p.id,
-            "item_id": code,
-            "item_status": istatus.value,
-            "status": p.status.value,
-            "score_at_post": p.score_at_post,
-            "external_ref": p.external_ref,
-            "posted_at": p.posted_at.isoformat() if p.posted_at else None,
-            "removal_reason": p.removal_reason,
-        }
-        for p, code, istatus in db.execute(stmt.order_by(ChannelPost.id.desc()))
+        channel.post_view(p, i, now)
+        for p, i in db.execute(stmt.order_by(ChannelPost.id.desc()).limit(limit).offset(offset))
     ]
+
+
+@router.get("/channel/removals")
+def channel_removals(db: Session = Depends(get_db), _: AdminPrincipal = Depends(VIEWER)) -> dict:
+    """What must be deleted from the Channel now (closed items still visible)."""
+    return channel.removals_needed(db)
 
 
 class ChannelPostIn(BaseModel):
@@ -537,38 +551,79 @@ class ChannelPostIn(BaseModel):
     position: int | None = Field(None, ge=0, le=1000)
 
 
+class QueueIn(BaseModel):
+    item_ids: list[str] = Field(..., min_length=1, max_length=50)
+
+
+class PublishedIn(BaseModel):
+    external_ref: str | None = Field(None, max_length=255)
+    position: int | None = Field(None, ge=0, le=1000)
+
+
+class FailedIn(BaseModel):
+    error: str = Field(..., min_length=2, max_length=300)
+
+
+class RemovalIn(BaseModel):
+    reason: str = Field("ADMIN", min_length=2, max_length=40)
+
+
+def _post_out(db: Session, post: ChannelPost) -> dict:
+    from app.core.clock import utcnow
+
+    return channel.post_view(post, db.get(Item, post.item_id), utcnow())
+
+
+@router.post("/channel/queue", status_code=201)
+def channel_queue(body: QueueIn, db: Session = Depends(get_db), admin: AdminPrincipal = Depends(MODERATOR)) -> list:
+    """Plan posts (PENDING) from the suggestions. Enforces the daily limit and one live post per item."""
+    return [_post_out(db, p) for p in channel.queue_posts(db, admin.id, body.item_ids)]
+
+
 @router.post("/channel/posts", status_code=201)
 def channel_register(
     body: ChannelPostIn, db: Session = Depends(get_db), admin: AdminPrincipal = Depends(MODERATOR)
 ) -> dict:
+    """Register a post the admin already published by hand (without queueing it first)."""
     post = channel.register_manual_post(
         db, admin.id, body.item_id, external_ref=body.external_ref, position=body.position
     )
-    audit(
-        db,
-        AuditAction.ADMIN_CHANNEL_ACTION,
-        actor_type=ActorType.ADMIN,
-        actor_id=admin.id,
-        entity_type="channel_post",
-        entity_id=post.id,
-        details={"action": "registered", "item": body.item_id},
+    return _post_out(db, post)
+
+
+@router.post("/channel/posts/{post_id}/published")
+def channel_published(
+    post_id: int, body: PublishedIn, db: Session = Depends(get_db), admin: AdminPrincipal = Depends(MODERATOR)
+) -> dict:
+    return _post_out(
+        db, channel.confirm_published(db, admin.id, post_id, external_ref=body.external_ref, position=body.position)
     )
-    return {"id": post.id, "status": post.status.value}
+
+
+@router.post("/channel/posts/{post_id}/failed")
+def channel_failed(
+    post_id: int, body: FailedIn, db: Session = Depends(get_db), admin: AdminPrincipal = Depends(MODERATOR)
+) -> dict:
+    return _post_out(db, channel.mark_failed(db, admin.id, post_id, body.error))
+
+
+@router.post("/channel/posts/{post_id}/retry")
+def channel_retry(post_id: int, db: Session = Depends(get_db), admin: AdminPrincipal = Depends(MODERATOR)) -> dict:
+    return _post_out(db, channel.retry_post(db, admin.id, post_id))
+
+
+@router.post("/channel/posts/{post_id}/remove")
+def channel_request_removal(
+    post_id: int, body: RemovalIn, db: Session = Depends(get_db), admin: AdminPrincipal = Depends(MODERATOR)
+) -> dict:
+    """Ask for a visible post to be taken down (REMOVAL_PENDING). The publication itself is not touched."""
+    return _post_out(db, channel.request_removal(db, admin.id, post_id, body.reason))
 
 
 @router.post("/channel/posts/{post_id}/removed")
 def channel_removed(post_id: int, db: Session = Depends(get_db), admin: AdminPrincipal = Depends(MODERATOR)) -> dict:
-    post = channel.confirm_removed(db, admin.id, post_id)
-    audit(
-        db,
-        AuditAction.ADMIN_CHANNEL_ACTION,
-        actor_type=ActorType.ADMIN,
-        actor_id=admin.id,
-        entity_type="channel_post",
-        entity_id=post.id,
-        details={"action": "removed"},
-    )
-    return {"id": post.id, "status": post.status.value}
+    """The admin deleted the post from the Channel."""
+    return _post_out(db, channel.confirm_removed(db, admin.id, post_id))
 
 
 class FeatureIn(BaseModel):
@@ -590,6 +645,88 @@ def channel_reconcile(db: Session = Depends(get_db), admin: AdminPrincipal = Dep
         AuditAction.ADMIN_CHANNEL_ACTION,
         actor_type=ActorType.ADMIN,
         actor_id=admin.id,
-        details={"action": "reconcile", **res},
+        details={"action": "reconcile", "fixed": res["fixed"], "issues": sorted(res["issues"])},
     )
     return res
+
+
+@router.post("/channel/refresh-scores")
+def channel_refresh_scores(db: Session = Depends(get_db), admin: AdminPrincipal = Depends(MODERATOR)) -> dict:
+    changed = channel.refresh_scores(db)
+    audit(
+        db,
+        AuditAction.ADMIN_CHANNEL_ACTION,
+        actor_type=ActorType.ADMIN,
+        actor_id=admin.id,
+        details={"action": "refresh_scores", "changed": changed},
+    )
+    return {"changed": changed}
+
+
+@router.get("/items/{public_id}/score")
+def item_score(public_id: str, db: Session = Depends(get_db), _: AdminPrincipal = Depends(VIEWER)) -> dict:
+    from app.core.clock import utcnow
+    from app.services.channel.score import compute_scores
+
+    item = pubs.get_by_public_id(db, public_id)
+    r = compute_scores(db, [item], utcnow(), decay_hours=float(cfg.get_value(db, "channel_exposure_decay_hours")))
+    return {"item_id": item.public_id, "channel_status": item.channel_status.value, **r[item.id].breakdown()}
+
+
+# ---- metrics / workers ------------------------------------------------------------------------------
+@router.get("/metrics")
+def metrics(
+    days: int = Query(30, ge=1, le=365), db: Session = Depends(get_db), _: AdminPrincipal = Depends(VIEWER)
+) -> dict:
+    """Dashboard metrics (section 48): users, publications, searches, offers, acceptance/rejection, expirations,
+    payments, releases, conversion, revenue, channel, exposures, errors, bans and performance."""
+    from app.services.metrics.service import dashboard_metrics
+
+    return dashboard_metrics(db, days)
+
+
+@router.get("/workers")
+def workers(db: Session = Depends(get_db), _: AdminPrincipal = Depends(VIEWER)) -> dict:
+    from app.core.clock import utcnow
+    from app.models.worker import JobRun, JobState, WorkerHeartbeat
+    from app.workers.runtime import STALE_AFTER
+
+    now = utcnow()
+    beats = db.execute(select(WorkerHeartbeat).order_by(WorkerHeartbeat.last_seen_at.desc()).limit(20)).scalars()
+    return {
+        "workers": [
+            {
+                "worker_id": w.worker_id,
+                "hostname": w.hostname,
+                "started_at": w.started_at.isoformat(),
+                "last_seen_at": w.last_seen_at.isoformat(),
+                "alive": w.stopped_at is None and now - w.last_seen_at < STALE_AFTER,
+                "stopped_at": w.stopped_at.isoformat() if w.stopped_at else None,
+            }
+            for w in beats
+        ],
+        "jobs": [
+            {
+                "job": st.job_name,
+                "status": st.status.value,
+                "last_started_at": st.last_started_at.isoformat() if st.last_started_at else None,
+                "last_success_at": st.last_success_at.isoformat() if st.last_success_at else None,
+                "last_error": st.last_error,
+                "last_affected": st.last_affected,
+                "last_duration_ms": st.last_duration_ms,
+                "consecutive_failures": st.consecutive_failures,
+            }
+            for st in db.execute(select(JobState).order_by(JobState.job_name)).scalars()
+        ],
+        "recent_runs": [
+            {
+                "job": r.job_name,
+                "status": r.status.value,
+                "started_at": r.started_at.isoformat(),
+                "duration_ms": r.duration_ms,
+                "affected": r.affected,
+                "error": r.error,
+            }
+            for r in db.execute(select(JobRun).order_by(JobRun.id.desc()).limit(50)).scalars()
+        ],
+    }

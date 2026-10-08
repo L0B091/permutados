@@ -212,7 +212,29 @@ _SUMMARIES = {
     "CONTACT_RELEASED_OWNER": "el ofertante pagó y los datos de contacto están listos",
     "PUBLICATION_EXPIRY_WARNING": "una publicación tuya está por vencer",
     "PUBLICATION_EXPIRED": "una publicación tuya venció",
+    "DEADLINE_EXTENDED": "extendimos un plazo por mantenimiento",
 }
+
+
+def deadline_extended_offer_owner(*, item_code: str, title: str, expires_at: datetime) -> str:
+    return (
+        f"🛠️ Permutados estuvo en mantenimiento. Para que no pierdas tiempo, extendimos el plazo de la oferta por "
+        f"{title} ({item_code}): ahora tenés hasta el {local_time(expires_at)} para aceptar o rechazar."
+    )
+
+
+def deadline_extended_offer_bidder(*, item_code: str, title: str, expires_at: datetime) -> str:
+    return (
+        f"🛠️ Permutados estuvo en mantenimiento. Tu oferta por {title} ({item_code}) ahora vence el "
+        f"{local_time(expires_at)}."
+    )
+
+
+def deadline_extended_payment_bidder(*, item_code: str, title: str, due_at: datetime) -> str:
+    return (
+        f"🛠️ Permutados estuvo en mantenimiento. Extendimos tu plazo para pagar la tarifa de {title} "
+        f"({item_code}) hasta el {local_time(due_at)}. Respondé PAGAR y te mando el link actualizado."
+    )
 
 
 def summary_for(kind: str) -> str:

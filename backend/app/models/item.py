@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -9,6 +9,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Computed,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -23,7 +24,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
 from app.models.base import IdMixin, TimestampMixin, pg_enum
-from app.models.enums import ItemStatus
+from app.models.enums import InteractionKind, ItemChannelStatus, ItemStatus
 
 
 class Item(IdMixin, TimestampMixin, Base):
@@ -75,6 +76,15 @@ class Item(IdMixin, TimestampMixin, Base):
         TSVECTOR, Computed("to_tsvector('spanish', coalesce(search_text, ''))", persisted=True)
     )
     featured: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    # Channel status is separate from the publication status (section 33); maintained by the channel service.
+    channel_status: Mapped[ItemChannelStatus] = mapped_column(
+        pg_enum(ItemChannelStatus, "item_channel_status"),
+        nullable=False,
+        default=ItemChannelStatus.NOT_POSTED,
+        server_default="NOT_POSTED",
+    )
+    score_breakdown: Mapped[dict[str, Any] | None] = mapped_column(JSONB)  # last computed signals (admin view)
+    score_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     attractiveness_score: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     view_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     selection_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
@@ -115,3 +125,17 @@ class ItemImage(IdMixin, TimestampMixin, Base):
     provider_media_id: Mapped[str | None] = mapped_column(String(128))
 
     item: Mapped[Item] = relationship(back_populates="images")
+
+
+class ItemInteraction(Base):
+    """Distinct-user interaction counters per item and day (abuse-resistant demand signals for the
+    attractiveness score: one user spamming searches counts once per day). Owners are never recorded."""
+
+    __tablename__ = "item_interactions"
+    __table_args__ = (Index("ix_item_interactions_day", "day"),)
+
+    item_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("items.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    kind: Mapped[InteractionKind] = mapped_column(pg_enum(InteractionKind, "interaction_kind"), primary_key=True)
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    count: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Index, String, text
+from sqlalchemy import DateTime, Index, Integer, String, text
 from sqlalchemy.dialects.postgresql import INET, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -35,11 +35,18 @@ class DomainEvent(IdMixin, Base):
     """Persisted internal events (ITEM_COMPLETED, OFFER_CREATED, ...). Handlers run in-transaction."""
 
     __tablename__ = "domain_events"
-    __table_args__ = (Index("ix_domain_events_type_created", "event_type", "created_at"),)
+    __table_args__ = (
+        Index("ix_domain_events_type_created", "event_type", "created_at"),
+        Index("ix_domain_events_unprocessed", "id", postgresql_where=text("processed_at IS NULL")),
+    )
 
     event_type: Mapped[str] = mapped_column(String(40), nullable=False)
     aggregate_type: Mapped[str] = mapped_column(String(40), nullable=False)
     aggregate_id: Mapped[str] = mapped_column(String(40), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"), nullable=False)
-    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # all handlers succeeded
+    # Best-effort handlers that failed (retried by the worker): ["module.handler", ...]
+    failed_handlers: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    last_error: Mapped[str | None] = mapped_column(String(500))

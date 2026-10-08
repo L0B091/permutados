@@ -13,9 +13,10 @@ from app.core.clock import utcnow
 from app.core.errors import Ambiguous, InvalidState, NotFound, ValidationFailed
 from app.core.text import normalize
 from app.models.conversation import SearchSession
-from app.models.enums import ItemStatus, UserStatus
+from app.models.enums import InteractionKind, ItemStatus, UserStatus
 from app.models.item import Item
 from app.models.user import User, Zone
+from app.services.channel import interactions
 from app.services.publications.service import get_by_public_id, public_view
 from app.services.search.query_parser import SearchFilters, parse_query
 
@@ -113,6 +114,7 @@ def _fetch_page(session: Session, user: User, ss: SearchSession) -> SearchPage:
     ss.exhausted = len(items) < PAGE_SIZE
     if ids:
         session.execute(update(Item).where(Item.id.in_(ids)).values(search_impressions=Item.search_impressions + 1))
+        interactions.record(session, user.id, ids, InteractionKind.IMPRESSION)
     session.flush()
     results = [{"n": n, **public_view(session, it)} for n, it in enumerate(items, start=1)]
     return SearchPage(ss.id, ss.page, results, ss.exhausted, used_fallback)
@@ -225,6 +227,7 @@ def _check_selectable(session: Session, user: User, item: Item) -> Item:
     if item.status != ItemStatus.PUBLISHED or (item.expires_at and item.expires_at <= utcnow()):
         raise InvalidState("Ese artículo ya no está disponible.", code="ITEM_NOT_AVAILABLE")
     session.execute(update(Item).where(Item.id == item.id).values(selection_count=Item.selection_count + 1))
+    interactions.record(session, user.id, [item.id], InteractionKind.SELECTION)
     return item
 
 

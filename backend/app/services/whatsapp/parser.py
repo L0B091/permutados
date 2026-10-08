@@ -27,6 +27,7 @@ class StatusUpdate:
     status: str  # sent | delivered | read | failed
     recipient: str | None
     error_code: int | None
+    callback_data: str | None = None  # biz_opaque_callback_data echoed by Meta (our idempotency key)
 
 
 def _contacts_text(contacts: list[dict[str, Any]]) -> str:
@@ -105,5 +106,14 @@ def parse_statuses(payload: dict[str, Any]) -> list[StatusUpdate]:
                     except (TypeError, ValueError):
                         code = None
                 if st.get("id") and st.get("status"):
-                    out.append(StatusUpdate(str(st["id"]), str(st["status"]), st.get("recipient_id"), code))
+                    cb = st.get("biz_opaque_callback_data")
+                    out.append(
+                        StatusUpdate(
+                            str(st["id"]),
+                            str(st["status"]),
+                            st.get("recipient_id"),
+                            code,
+                            str(cb)[:512] if isinstance(cb, str) and cb else None,
+                        )
+                    )
     return out

@@ -101,7 +101,12 @@ def create_payment(session: Session, bidder: User, transaction_public_id: str, g
         .scalars()
         .first()
     )
-    if existing is not None and existing.checkout_url:
+    # Reuse the open checkout unless its expiration is earlier than the (possibly extended) payment deadline.
+    if (
+        existing is not None
+        and existing.checkout_url
+        and (existing.checkout_expires_at is None or existing.checkout_expires_at >= tx.payment_due_at)
+    ):
         return PaymentLink(existing, existing.checkout_url, templates.payment_link(fee=fee, url=existing.checkout_url))
     ext_ref = f"{tx.public_id}-{uuid.uuid4().hex[:12]}"
     item = session.get(Item, tx.item_id)
@@ -120,6 +125,7 @@ def create_payment(session: Session, bidder: User, transaction_public_id: str, g
         external_reference=ext_ref,
         provider_checkout_id=checkout.checkout_id,
         checkout_url=checkout.url,
+        checkout_expires_at=tx.payment_due_at,
         status=PaymentStatus.CREATED,
         amount=tx.amount,
         currency=tx.currency,

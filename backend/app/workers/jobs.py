@@ -24,6 +24,8 @@ from app.services.offers import service as offers
 from app.services.payments import service as payments
 from app.services.publications.state import transition_item
 from app.services.system import config_service as cfg
+from app.services.system.modes import NOT_EMERGENCY, ONLINE_ONLY
+from app.workers.runtime import Job, prune_history
 
 log = logging.getLogger(__name__)
 
@@ -88,6 +90,7 @@ def expire_publications(session: Session, now=None) -> int:
 
 
 def run_with_lock(name: str, fn: Callable[[Session], int]) -> int | None:
+    """Run ``fn`` once under the job's advisory lock (no mode policy / bookkeeping). Kept for scripts/tests."""
     key = zlib.crc32(f"permutados:{name}".encode())
     with session_scope() as session:
         if not session.execute(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": key}).scalar():
@@ -96,6 +99,59 @@ def run_with_lock(name: str, fn: Callable[[Session], int]) -> int | None:
         if n:
             audit(session, "WORKER_JOB", actor_type=ActorType.WORKER, details={"job": name, "affected": n})
         return n
+
+
+def retry_event_handlers(session: Session) -> int:
+    from app.services.events.bus import get_bus
+
+    return get_bus().retry_failed(session)
+
+
+def maintenance_jobs(gateway=None) -> list[Job]:
+    """Periodic jobs with their system-mode policy (section 46):
+
+    * deadline jobs (offer / payment window expiry) and contact releases run only ONLINE: while PAUSED or in
+      EMERGENCY users cannot accept or pay, so deadlines are frozen and extended on resume (system.modes);
+    * payment reconciliation, publication expiry, channel removal flags/reconciliation, event-handler retries,
+      outbox recovery and pruning are safe and keep running in every mode;
+    * score refresh is skipped in EMERGENCY.
+    """
+    from app.services.notifications.outbox import recover_stale_sending
+
+    jobs = [
+        Job("expire_pending_offers", offers.expire_pending_offers, 60, ONLINE_ONLY, description="offer 24h expiry"),
+        Job(
+            "expire_payment_windows",
+            lambda s: offers.expire_payment_windows(s, gateway=gateway),
+            60,
+            ONLINE_ONLY,
+            description="payment 24h window expiry (asks Mercado Pago first)",
+        ),
+        Job("release_deferred", payments.release_deferred, 60, ONLINE_ONLY, description="releases deferred by mode"),
+        Job("warn_expiring_publications", warn_expiring_publications, 3600, description="30-day expiry warning"),
+        Job("expire_publications", expire_publications, 300, description="30-day expiry"),
+        Job("channel_reconciliation", channel.reconcile, 600, description="channel DB vs recorded state"),
+        Job("refresh_channel_scores", channel.refresh_scores, 900, NOT_EMERGENCY, description="attractiveness"),
+        Job("retry_event_handlers", retry_event_handlers, 60, description="failed best-effort event handlers"),
+        Job(
+            "recover_outbox_in_flight",
+            lambda: recover_stale_sending(),
+            300,
+            transactional=False,
+            description="notifications left in SENDING by a crash",
+        ),
+        Job("prune_history", prune_history, 86400, description="retention of bookkeeping tables"),
+    ]
+    if gateway is not None:
+        jobs.append(
+            Job(
+                "reconcile_pending_payments",
+                lambda s: payments.reconcile_pending_payments(s, gateway),
+                300,
+                description="payments approved while webhooks were lost",
+            )
+        )
+    return jobs
 
 
 def messaging_jobs(*, dolphin, wa, gateway=None, storage=None) -> dict[str, tuple[Callable[[], int], int]]:
@@ -118,16 +174,13 @@ def messaging_jobs(*, dolphin, wa, gateway=None, storage=None) -> dict[str, tupl
     return jobs
 
 
+def messaging_job_objects(*, dolphin, wa, gateway=None, storage=None) -> list[Job]:
+    return [
+        Job(name, fn, interval, transactional=False, record_idle=False)
+        for name, (fn, interval) in messaging_jobs(dolphin=dolphin, wa=wa, gateway=gateway, storage=storage).items()
+    ]
+
+
 def job_definitions(gateway=None) -> dict[str, tuple[Callable[[Session], int], int]]:
-    """name -> (function, interval seconds)."""
-    jobs: dict[str, tuple[Callable[[Session], int], int]] = {
-        "expire_pending_offers": (offers.expire_pending_offers, 60),
-        "expire_payment_windows": (offers.expire_payment_windows, 60),
-        "release_deferred": (payments.release_deferred, 60),
-        "warn_expiring_publications": (warn_expiring_publications, 3600),
-        "expire_publications": (expire_publications, 300),
-        "channel_reconciliation": (lambda s: channel.reconcile(s)["flagged"], 600),
-    }
-    if gateway is not None:
-        jobs["reconcile_pending_payments"] = (lambda s: payments.reconcile_pending_payments(s, gateway), 300)
-    return jobs
+    """name -> (function, interval seconds) for the transactional maintenance jobs (compat helper)."""
+    return {j.name: (j.fn, j.interval) for j in maintenance_jobs(gateway) if j.transactional}

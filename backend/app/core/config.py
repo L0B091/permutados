@@ -115,6 +115,9 @@ class Settings(BaseSettings):
     outbox_poll_seconds: int = 2
     outbox_batch_size: int = 50
     outbox_max_attempts: int = 8
+    # A notification left in SENDING (worker crashed mid-send) with no status webhook after this many seconds is
+    # considered never accepted by Meta and is retried (templates are never resent).
+    outbox_sending_grace_seconds: int = 900
 
     @field_validator("database_url")
     @classmethod

@@ -119,6 +119,7 @@ class Notification(IdMixin, TimestampMixin, Base):
     last_error: Mapped[str | None] = mapped_column(String(500))
     provider_message_id: Mapped[str | None] = mapped_column(String(128))
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sending_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # don't deliver after this
     channel: Mapped[str | None] = mapped_column(String(20))  # SESSION | TEMPLATE (how it was delivered)

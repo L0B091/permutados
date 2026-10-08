@@ -69,7 +69,19 @@ VALIDATORS: dict[str, Callable[[Any], Any]] = {
     "channel_min_score": _int_range(0, 100),
     "channel_max_exposure_per_item": _int_range(0, 100),
     "channel_min_hours_between_same_item": _int_range(0, 24 * 60),
+    # Manual channel (sections 26-29, 33): ranking/diversity/exposure knobs for the suggestions list.
+    "channel_category_diversity": _bool,
+    "channel_zone_diversity": _bool,
+    "channel_price_diversity": _bool,
+    "channel_featured_max_per_batch": _int_range(0, 50),
+    "channel_min_minutes_between_posts": _int_range(0, 24 * 60),
+    "channel_exposure_decay_hours": _int_range(1, 24 * 30),
+    "channel_refresh_hours": _int_range(1, 24 * 30),
+    "channel_removal_overdue_hours": _int_range(1, 24 * 7),
 }
+
+# Internal state stored in system_config but never editable through the admin config endpoint.
+INTERNAL_KEYS = ("system_paused_since",)
 
 
 def defaults() -> dict[str, Any]:
@@ -88,6 +100,14 @@ def defaults() -> dict[str, Any]:
         "channel_min_score": s.channel_min_score,
         "channel_max_exposure_per_item": s.channel_max_exposure_per_item,
         "channel_min_hours_between_same_item": s.channel_min_hours_between_same_item,
+        "channel_category_diversity": True,
+        "channel_zone_diversity": True,
+        "channel_price_diversity": True,
+        "channel_featured_max_per_batch": 3,
+        "channel_min_minutes_between_posts": 30,
+        "channel_exposure_decay_hours": 72,
+        "channel_refresh_hours": 72,
+        "channel_removal_overdue_hours": 6,
     }
 
 
@@ -122,11 +142,36 @@ def set_value(session: Session, key: str, value: Any, *, admin_id: int | None = 
         clean = VALIDATORS[key](value)
     except (ValueError, TypeError) as e:
         raise ValidationFailed(f"invalid value for {key}: {e}", code="INVALID_CONFIG_VALUE") from e
+    if key == "system_mode":
+        from app.services.system import modes
+
+        before = current_mode(session)
+        _write(session, key, clean, admin_id)
+        modes.on_mode_change(session, before, SystemMode(clean), admin_id=admin_id)
+        return clean
+    _write(session, key, clean, admin_id)
+    return clean
+
+
+def _write(session: Session, key: str, clean: Any, admin_id: int | None) -> None:
     stmt = insert(SystemConfig).values(key=key, value=clean, updated_by_admin_id=admin_id)
     stmt = stmt.on_conflict_do_update(index_elements=["key"], set_={"value": clean, "updated_by_admin_id": admin_id})
     session.execute(stmt)
     session.flush()
-    return clean
+
+
+def get_internal(session: Session, key: str) -> Any:
+    assert key in INTERNAL_KEYS
+    return session.execute(select(SystemConfig.value).where(SystemConfig.key == key)).scalar_one_or_none()
+
+
+def set_internal(session: Session, key: str, value: Any) -> None:
+    assert key in INTERNAL_KEYS
+    if value is None:
+        session.query(SystemConfig).filter(SystemConfig.key == key).delete()
+        session.flush()
+        return
+    _write(session, key, value, None)
 
 
 # ---- convenience typed getters ---------------------------------------------------------------

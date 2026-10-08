@@ -22,12 +22,13 @@ from sqlalchemy.orm import Session
 from app.core.errors import DomainError, NotFound, ValidationFailed
 from app.core.text import clean_user_text
 from app.models.conversation import ConversationSession
-from app.models.enums import ActorType, ItemStatus, ReportReason, SecurityEventType, Severity
+from app.models.enums import ActorType, InteractionKind, ItemStatus, ReportReason, SecurityEventType, Severity
 from app.models.item import Item
 from app.models.offer import Offer, Transaction
 from app.models.report import Report
 from app.models.user import User
 from app.services.audit.service import AuditAction, audit
+from app.services.channel import interactions
 from app.services.conversation import state_machine
 from app.services.mercadopago.gateway import PaymentGateway
 from app.services.offers import service as offers
@@ -219,6 +220,7 @@ def _get_publication(ctx: ToolContext, a: GetPublicationArgs) -> dict[str, Any]:
     if item.status not in (ItemStatus.PUBLISHED,):
         return {"ok": True, "item_id": item.public_id, "available": False}
     item.view_count += 1
+    interactions.record(ctx.session, ctx.user.id, [item.id], InteractionKind.VIEW)
     return {"ok": True, "owner": False, **_item_brief(ctx.session, item, owner_view=False)}
 
 
