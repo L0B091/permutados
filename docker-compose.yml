@@ -1,0 +1,81 @@
+# NOTE: written for the production server; not executed in the build environment (Docker unavailable there).
+name: permutados
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-permutados}
+      POSTGRES_USER: ${POSTGRES_USER:-permutados}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [internal]
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [internal]
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DOLPHIN_ASSETS_PATH: /srv/dolphin
+      STORAGE_PATH: /data/storage
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    volumes:
+      - storage:/data/storage
+      - ./dolphin:/srv/dolphin:ro
+    ports:
+      - "127.0.0.1:8000:8000"   # only reachable through the reverse proxy on the host
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/health/ready')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [internal]
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DOLPHIN_ASSETS_PATH: /srv/dolphin
+      STORAGE_PATH: /data/storage
+    command: ["python", "-m", "app.workers.scheduler"]
+    depends_on:
+      backend: {condition: service_healthy}
+    volumes:
+      - storage:/data/storage
+      - ./dolphin:/srv/dolphin:ro
+    networks: [internal]
+
+volumes:
+  pgdata:
+  redisdata:
+  storage:
+
+networks:
+  internal:

@@ -1,0 +1,771 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "create_publication",
+      "description": "Crear un BORRADOR con la foto que el usuario acaba de enviar y tu sugerencia de identificación (nunca precio).",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Category"
+          },
+          "brand": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Brand"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Confidence"
+          }
+        },
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_my_publications",
+      "description": "Listar las publicaciones activas del usuario.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_publication",
+      "description": "Ver una publicación por código. Si es un borrador completo del usuario devuelve la previsualización.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "item_id": {
+            "pattern": "^ITEM-[23456789ABCDEFGHJKMNPQRSTVWXYZ]{5,8}$",
+            "title": "Item Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "update_publication",
+      "description": "Completar un borrador (datos básicos, publish=true tras confirmar la previsualización) o editar una publicación propia.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "item_id": {
+            "pattern": "^ITEM-[23456789ABCDEFGHJKMNPQRSTVWXYZ]{5,8}$",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Category"
+          },
+          "identification_confirmed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Identification Confirmed"
+          },
+          "zone": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Zone"
+          },
+          "price": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Exact price stated by the user",
+            "title": "Price"
+          },
+          "accepts_swap": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Accepts Swap"
+          },
+          "has_damage": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Has Damage"
+          },
+          "damage_description": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Damage Description"
+          },
+          "works": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Works"
+          },
+          "malfunction_description": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Malfunction Description"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "publish": {
+            "default": false,
+            "description": "Publish a DRAFT. Only after the user confirmed the preview.",
+            "title": "Publish",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "item_id"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "delete_publication",
+      "description": "Borrar una publicación propia (por código o como la nombró el usuario).",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "reference": {
+            "description": "ITEM code or how the user named it",
+            "maxLength": 120,
+            "title": "Reference",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reference"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "search_publications",
+      "description": "Buscar artículos en lenguaje natural. Devuelve hasta 5 resultados.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Query",
+            "type": "string"
+          },
+          "zone": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Zone"
+          },
+          "max_price": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Max Price"
+          },
+          "accepts_swap": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Accepts Swap"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Category"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_search_page",
+      "description": "Siguiente página (5 más, sin repetir) de la búsqueda actual.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "select_publication",
+      "description": "Elegir un artículo por número, código o descripción.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "reference": {
+            "description": "Number 1-5, ordinal, ITEM code or description",
+            "maxLength": 120,
+            "title": "Reference",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reference"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "create_offer",
+      "description": "Hacer una oferta (MONEY, SWAP o COMBINED) por el artículo elegido. Vence en 24h.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "item_id": {
+            "anyOf": [
+              {
+                "pattern": "^ITEM-[23456789ABCDEFGHJKMNPQRSTVWXYZ]{5,8}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Item Id"
+          },
+          "offer_type": {
+            "enum": [
+              "MONEY",
+              "SWAP",
+              "COMBINED"
+            ],
+            "title": "Offer Type",
+            "type": "string"
+          },
+          "offered_price": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Offered Price"
+          },
+          "offered_item": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Offered Item"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Message"
+          }
+        },
+        "required": [
+          "offer_type"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_offer",
+      "description": "Ver el estado de una oferta.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "offer_id": {
+            "anyOf": [
+              {
+                "pattern": "^OFR-[23456789ABCDEFGHJKMNPQRSTVWXYZ]{5,8}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Offer Id"
+          }
+        },
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "cancel_offer",
+      "description": "Ofertante: cancelar su oferta. Propietario: arrepentirse de una oferta aceptada mientras no se haya pagado.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "offer_id": {
+            "anyOf": [
+              {
+                "pattern": "^OFR-[23456789ABCDEFGHJKMNPQRSTVWXYZ]{5,8}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Offer Id"
+          }
+        },
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "accept_offer",
+      "description": "Propietario: aceptar una oferta pendiente.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "offer_id": {
+            "anyOf": [
+              {
+                "pattern": "^OFR-[23456789ABCDEFGHJKMNPQRSTVWXYZ]{5,8}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Offer Id"
+          }
+        },
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "reject_offer",
+      "description": "Propietario: rechazar una oferta pendiente.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "offer_id": {
+            "anyOf": [
+              {
+                "pattern": "^OFR-[23456789ABCDEFGHJKMNPQRSTVWXYZ]{5,8}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Offer Id"
+          }
+        },
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_transaction",
+      "description": "Ver una operación.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "transaction_id": {
+            "anyOf": [
+              {
+                "pattern": "^OP-[23456789ABCDEFGHJKMNPQRSTVWXYZ]{5,8}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Transaction Id"
+          }
+        },
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "create_payment",
+      "description": "Ofertante: obtener el link oficial de Mercado Pago para pagar la tarifa.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "transaction_id": {
+            "anyOf": [
+              {
+                "pattern": "^OP-[23456789ABCDEFGHJKMNPQRSTVWXYZ]{5,8}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Transaction Id"
+          }
+        },
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_payment_status",
+      "description": "Consultar el estado VERIFICADO del pago (consulta a Mercado Pago).",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "transaction_id": {
+            "anyOf": [
+              {
+                "pattern": "^OP-[23456789ABCDEFGHJKMNPQRSTVWXYZ]{5,8}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Transaction Id"
+          }
+        },
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "send_message",
+      "description": "Enviar un mensaje adicional al usuario actual.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "maxLength": 1500,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "warn_user",
+      "description": "Marcar una sospecha para revisión de un administrador (no suma advertencias).",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "maxLength": 300,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "report_publication",
+      "description": "Reportar una publicación.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "item_id": {
+            "pattern": "^ITEM-[23456789ABCDEFGHJKMNPQRSTVWXYZ]{5,8}$",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "FRAUD",
+              "FAKE_ITEM",
+              "PROHIBITED_ITEM",
+              "SPAM",
+              "WRONG_INFO",
+              "SUSPICIOUS_BEHAVIOR"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "details": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Details"
+          }
+        },
+        "required": [
+          "item_id",
+          "reason"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_user_context",
+      "description": "Contexto verificado de la conversación.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      }
+    }
+  }
+]
