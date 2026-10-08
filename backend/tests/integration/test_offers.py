@@ -43,7 +43,7 @@ def test_create_offer_pauses_item_and_informs_both_of_24h(db, setup, notificatio
     assert "Tu oferta vence en 24h" in bidder_msgs[0].body
     assert owner_msgs[0].payload["hours"] == 24
     # Privacy: the owner does not receive the bidder's phone and vice versa.
-    assert bidder.whatsapp_id not in owner_msgs[0].body and owner.whatsapp_id not in bidder_msgs[0].body
+    assert bidder.test_wa_id not in owner_msgs[0].body and owner.test_wa_id not in bidder_msgs[0].body
 
 
 @pytest.mark.parametrize(
@@ -223,7 +223,7 @@ def test_accept_creates_transaction_with_configured_fee(db, setup, notifications
     assert tx.payment_due_at - acc.offer.accepted_at == timedelta(hours=24)
     msg = notifications(bidder.id, "OFFER_ACCEPTED_BIDDER")[0].body
     assert "ARS 3.000" in msg and "24h para pagar" in msg
-    assert owner.whatsapp_id not in msg  # contact NOT released on acceptance
+    assert owner.test_wa_id not in msg  # contact NOT released on acceptance
 
 
 def test_owner_can_back_out_before_payment(db, setup, notifications, gateway):

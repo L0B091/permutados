@@ -18,7 +18,7 @@ def test_first_warning_then_suspension_pending_admin_review(db, make_user, publi
     dolphin = MockDolphinClient()
 
     r1 = handle_inbound(
-        db, wa_id=user.whatsapp_id, text="escribime al 11 5555 4444", client=dolphin, provider_message_id="wamid.1"
+        db, wa_id=user.test_wa_id, text="escribime al 11 5555 4444", client=dolphin, provider_message_id="wamid.1"
     )
     db.commit()
     assert r1.blocked and r1.replies == [templates.EVASION_WARNING]
@@ -30,7 +30,7 @@ def test_first_warning_then_suspension_pending_admin_review(db, make_user, publi
 
     r2 = handle_inbound(
         db,
-        wa_id=user.whatsapp_id,
+        wa_id=user.test_wa_id,
         text="dale, buscame en instagram @juan",
         client=dolphin,
         provider_message_id="wamid.2",
@@ -45,7 +45,7 @@ def test_first_warning_then_suspension_pending_admin_review(db, make_user, publi
     db.refresh(item)
     assert offer.status == OfferStatus.CANCELLED and item.status == ItemStatus.PUBLISHED  # item not left paused
 
-    r3 = handle_inbound(db, wa_id=user.whatsapp_id, text="hola?", client=dolphin, provider_message_id="wamid.3")
+    r3 = handle_inbound(db, wa_id=user.test_wa_id, text="hola?", client=dolphin, provider_message_id="wamid.3")
     assert r3.blocked and r3.replies == [templates.ACCOUNT_SUSPENDED] and dolphin.requests == []
 
 
@@ -59,7 +59,7 @@ def test_admin_confirms_or_lifts(db, make_user):
         for i in range(2):
             handle_inbound(
                 db,
-                wa_id=u.whatsapp_id,
+                wa_id=u.test_wa_id,
                 text="mi mail es a@b.com",
                 client=MockDolphinClient(),
                 provider_message_id=f"m-{u.id}-{i}",
@@ -76,9 +76,9 @@ def test_admin_confirms_or_lifts(db, make_user):
 def test_duplicate_webhook_message_processed_once(db, make_user):
     u = make_user()
     d = MockDolphinClient()
-    handle_inbound(db, wa_id=u.whatsapp_id, text="hola", client=d, provider_message_id="wamid.X")
+    handle_inbound(db, wa_id=u.test_wa_id, text="hola", client=d, provider_message_id="wamid.X")
     db.commit()
-    r = handle_inbound(db, wa_id=u.whatsapp_id, text="hola", client=d, provider_message_id="wamid.X")
+    r = handle_inbound(db, wa_id=u.test_wa_id, text="hola", client=d, provider_message_id="wamid.X")
     assert r.duplicate and len(d.requests) == 1
 
 
@@ -86,7 +86,7 @@ def test_legit_prices_are_not_penalised(db, make_user):
     u = make_user()
     r = handle_inbound(
         db,
-        wa_id=u.whatsapp_id,
+        wa_id=u.test_wa_id,
         text="te ofrezco $150.000 o 1.500.000 pesos por las dos",
         client=MockDolphinClient(),
         provider_message_id="w1",

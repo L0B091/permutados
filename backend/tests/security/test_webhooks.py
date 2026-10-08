@@ -143,5 +143,10 @@ def test_whatsapp_signature_and_dedupe(client):
     assert bad.status_code == 401
     sig = wa_sig("test-wa-app-secret", body)
     h = {"x-hub-signature-256": sig, "content-type": "application/json"}
-    assert client.post("/webhooks/whatsapp", content=body, headers=h).json() == {"received": 1}
-    assert client.post("/webhooks/whatsapp", content=body, headers=h).json() == {"received": 0}
+    assert client.post("/webhooks/whatsapp", content=body, headers=h).json() == {"received": 1, "statuses": 0}
+    assert client.post("/webhooks/whatsapp", content=body, headers=h).json() == {"received": 0, "statuses": 0}
+    # The queued row holds no plaintext number or text.
+    with dbmod.session_scope() as s:
+        row = s.execute(select(WebhookEvent).where(WebhookEvent.provider == "whatsapp")).scalar_one()
+        dumped = json.dumps(row.payload)
+    assert "5491100000001" not in dumped and "hola" not in dumped and "Ana" not in dumped

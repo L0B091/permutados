@@ -19,6 +19,7 @@ from app.services.offers import service as offers
 from app.services.payments import service as payments
 from app.services.payments.service import Outcome
 from app.services.system import config_service as cfg
+from app.services.users.pii import reveal_notification_body
 
 
 @pytest.fixture
@@ -81,10 +82,10 @@ def test_approved_payment_releases_both_contacts_with_keyword(db, accepted, gate
     assert item.status == ItemStatus.COMPLETED
     kw = tx.security_keyword
     assert kw and kw.split("-")[0].isalpha() and kw.split("-")[1].isdigit()
-    to_bidder = notifications(bidder.id, "CONTACT_RELEASED_BIDDER")[0].body
-    to_owner = notifications(owner.id, "CONTACT_RELEASED_OWNER")[0].body
-    assert f"+{owner.whatsapp_id}" in to_bidder and kw in to_bidder
-    assert f"+{bidder.whatsapp_id}" in to_owner and kw in to_owner
+    to_bidder = reveal_notification_body(notifications(bidder.id, "CONTACT_RELEASED_BIDDER")[0])
+    to_owner = reveal_notification_body(notifications(owner.id, "CONTACT_RELEASED_OWNER")[0])
+    assert f"+{owner.test_wa_id}" in to_bidder and kw in to_bidder
+    assert f"+{bidder.test_wa_id}" in to_owner and kw in to_owner
     # Idempotent: the same webhook again does nothing new.
     assert payments.process_provider_notification(db, pp.provider_payment_id, gateway) == Outcome.ALREADY_PROCESSED
     db.commit()

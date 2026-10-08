@@ -19,6 +19,7 @@ from app.services.conversation.service import get_active_session, handle_inbound
 from app.services.dolphin.mock import MockDolphinClient, say, tool
 from app.services.dolphin.orchestrator import DOLPHIN_DOWN_REPLY
 from app.services.mercadopago.signature import compute_signature
+from app.services.users.pii import reveal_notification_body
 from tests.conftest import make_image
 
 _mid = iter(range(1, 1_000_000))
@@ -28,7 +29,7 @@ def send(db, user, text=None, script=(), images=None, gateway=None):
     client = MockDolphinClient(list(script))
     r = handle_inbound(
         db,
-        wa_id=user.whatsapp_id,
+        wa_id=user.test_wa_id,
         text=text,
         images=images,
         image_mime="image/jpeg" if images else None,
@@ -166,9 +167,9 @@ def test_full_flow_publish_search_offer_accept_pay_release(db, make_user, publis
         db.execute(select(Offer).where(Offer.public_id == offer_code)).scalar_one().status
         == OfferStatus.CONTACT_RELEASED
     )
-    to_bidder = notifications(user_id=bidder.id, kind="CONTACT_RELEASED_BIDDER")[0].body
-    to_owner = notifications(user_id=owner.id, kind="CONTACT_RELEASED_OWNER")[0].body
-    assert owner.whatsapp_id in to_bidder and bidder.whatsapp_id in to_owner
+    to_bidder = reveal_notification_body(notifications(user_id=bidder.id, kind="CONTACT_RELEASED_BIDDER")[0])
+    to_owner = reveal_notification_body(notifications(user_id=owner.id, kind="CONTACT_RELEASED_OWNER")[0])
+    assert owner.test_wa_id in to_bidder and bidder.test_wa_id in to_owner
     assert tx.security_keyword in to_bidder and tx.security_keyword in to_owner
     assert db.get(Item, item.id).status == ItemStatus.COMPLETED
     assert db.get(ChannelPost, post.id).status == ChannelPostStatus.REMOVAL_PENDING
@@ -184,7 +185,7 @@ def test_dolphin_down_keeps_state_and_answers_safely(db, make_user, publish_item
     item = publish_item(owner)
     r = handle_inbound(
         db,
-        wa_id=bidder.whatsapp_id,
+        wa_id=bidder.test_wa_id,
         text=f"ofrezco 100 mil por {item.public_id}",
         client=MockDolphinClient(unavailable=True),
         provider_message_id="wamid.down",

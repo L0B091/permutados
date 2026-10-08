@@ -27,6 +27,8 @@ os.environ.update(
         "MERCADOPAGO_WEBHOOK_SECRET": "test-mp-webhook-secret",
         "MERCADOPAGO_ACCESS_TOKEN": "fake-mp-access-token-for-tests-only",
         "DOLPHIN_API_KEY": "dolphin-test-key-secret",
+        # Fixed, test-only key (urlsafe base64 of 32 bytes). Never used outside the test suite.
+        "ENCRYPTION_KEY": "dGVzdC1vbmx5LWVuY3J5cHRpb24ta2V5LTMyYnl0ZXM",
         "STORAGE_PATH": tempfile.mkdtemp(prefix="permutados-test-"),
         "LOG_LEVEL": "WARNING",
         "CONTACT_RELEASE_PRICE": "3000",
@@ -47,16 +49,22 @@ from app.core.ratelimit import get_rate_limiter  # noqa: E402
 KEEP_TABLES = {"zones", "alembic_version"}
 
 
-@pytest.fixture(scope="session", autouse=True)
-def migrated_db():
-    """Fresh schema via Alembic (downgrade to base, then upgrade head) — also verifies the migration."""
-    from alembic import command
+def make_alembic_config():
     from alembic.config import Config
 
     here = os.path.dirname(os.path.dirname(__file__))
     cfg = Config(os.path.join(here, "alembic.ini"))
     cfg.set_main_option("script_location", os.path.join(here, "migrations"))
     cfg.attributes["database_url"] = TEST_DB
+    return cfg
+
+
+@pytest.fixture(scope="session", autouse=True)
+def migrated_db():
+    """Fresh schema via Alembic (downgrade to base, then upgrade head) — also verifies the migration."""
+    from alembic import command
+
+    cfg = make_alembic_config()
     engine = dbmod.get_engine()
     with engine.begin() as conn:
         conn.execute(text("DROP SCHEMA public CASCADE; CREATE SCHEMA public;"))
@@ -125,8 +133,10 @@ def make_user(db):
     from app.services.users.service import get_or_create_by_whatsapp
 
     def _make(name: str | None = None):
-        u = get_or_create_by_whatsapp(db, str(next(_wa_counter)), name)
+        wa = str(next(_wa_counter))
+        u = get_or_create_by_whatsapp(db, wa, name)
         db.commit()
+        u.test_wa_id = wa  # plaintext kept only on the test object (the DB stores it encrypted)
         return u
 
     return _make
@@ -202,3 +212,33 @@ def notifications(db):
         return list(db.execute(stmt).scalars())
 
     return _get
+
+
+@pytest.fixture
+def wa_client():
+    from app.services.whatsapp.client import RecordingWhatsAppClient
+
+    return RecordingWhatsAppClient()
+
+
+@pytest.fixture
+def wa_post(client):
+    """POST a correctly signed WhatsApp webhook payload to the real endpoint."""
+    import json as _json
+
+    from app.services.whatsapp.signature import compute_signature
+
+    def _post(payload: dict):
+        body = _json.dumps(payload).encode()
+        r = client.post(
+            "/webhooks/whatsapp",
+            content=body,
+            headers={
+                "x-hub-signature-256": compute_signature("test-wa-app-secret", body),
+                "content-type": "application/json",
+            },
+        )
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    return _post
