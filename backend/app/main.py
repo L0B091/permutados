@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.routes import health, webhooks
 from app.api.routes.admin import auth as admin_auth
+from app.api.routes.admin import console as admin_console
 from app.api.routes.admin import routes as admin_routes
 from app.core.config import get_settings
 from app.core.errors import DomainError
@@ -52,7 +53,7 @@ def create_app(*, payment_gateway=None) -> FastAPI:
         CORSMiddleware,
         allow_origins=settings.cors_origins,
         allow_credentials=False,
-        allow_methods=["GET", "POST", "PUT"],
+        allow_methods=["GET", "POST", "PUT", "PATCH"],
         allow_headers=["Authorization", "Content-Type"],
     )
 
@@ -86,4 +87,5 @@ def create_app(*, payment_gateway=None) -> FastAPI:
     app.include_router(webhooks.router)
     app.include_router(admin_auth.router)
     app.include_router(admin_routes.router)
+    app.include_router(admin_console.router)
     return app

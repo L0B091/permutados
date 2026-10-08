@@ -149,7 +149,14 @@ def get_user(
         "warnings": [{"id": w.id, "reason": w.reason, "created_at": w.created_at.isoformat()} for w in warnings],
         "bans": [{"id": b.id, "status": b.status.value, "reason": b.reason} for b in bans],
         "items": [_item_out(i) for i in items],
+        **_user_activity(db, u.id),
     }
+
+
+def _user_activity(db: Session, user_id: int) -> dict:
+    from app.api.routes.admin.console import user_activity
+
+    return user_activity(db, user_id)
 
 
 class ReasonIn(BaseModel):
@@ -267,25 +274,17 @@ def list_offers(
     db: Session = Depends(get_db),
     _: AdminPrincipal = Depends(VIEWER),
 ) -> list[dict]:
+    from app.api.routes.admin.console import offer_out
+
     stmt = select(Offer)
     if status:
         stmt = stmt.where(Offer.status == status)
-    return [
-        {
-            "offer_id": o.public_id,
-            "item_id": o.item_id,
-            "bidder_id": o.bidder_id,
-            "owner_id": o.owner_id,
-            "type": o.offer_type.value,
-            "price": str(o.offered_price) if o.offered_price else None,
-            "offered_item": o.offered_item,
-            "status": o.status.value,
-            "close_reason": o.close_reason.value if o.close_reason else None,
-            "created_at": o.created_at.isoformat(),
-            "expires_at": o.expires_at.isoformat(),
-        }
-        for o in db.execute(stmt.order_by(Offer.id.desc()).limit(page[0]).offset(page[1])).scalars()
-    ]
+    offers = list(db.execute(stmt.order_by(Offer.id.desc()).limit(page[0]).offset(page[1])).scalars())
+    rows = db.execute(select(Item.id, Item.public_id, Item.title).where(Item.id.in_({o.item_id for o in offers})))
+    codes, titles = {}, {}
+    for iid, code, title in rows:
+        codes[iid], titles[iid] = code, title
+    return [offer_out(o, codes, titles) for o in offers]
 
 
 @router.get("/transactions")
@@ -295,24 +294,17 @@ def list_transactions(
     db: Session = Depends(get_db),
     _: AdminPrincipal = Depends(VIEWER),
 ) -> list[dict]:
+    from app.api.routes.admin.console import tx_out
+
     stmt = select(Transaction)
     if status:
         stmt = stmt.where(Transaction.status == status)
-    return [
-        {
-            "transaction_id": t.public_id,
-            "item_id": t.item_id,
-            "owner_id": t.owner_id,
-            "bidder_id": t.bidder_id,
-            "status": t.status.value,
-            "amount": str(t.amount),
-            "currency": t.currency,
-            "payment_due_at": t.payment_due_at.isoformat(),
-            "paid_at": t.paid_at.isoformat() if t.paid_at else None,
-            "released_at": t.released_at.isoformat() if t.released_at else None,
-        }
-        for t in db.execute(stmt.order_by(Transaction.id.desc()).limit(page[0]).offset(page[1])).scalars()
-    ]
+    txs = list(db.execute(stmt.order_by(Transaction.id.desc()).limit(page[0]).offset(page[1])).scalars())
+    items = {i.id: i for i in db.execute(select(Item).where(Item.id.in_({t.item_id for t in txs}))).scalars()}
+    offer_codes = dict(
+        db.execute(select(Offer.id, Offer.public_id).where(Offer.id.in_({t.offer_id for t in txs}))).all()
+    )
+    return [tx_out(t, items, offer_codes) for t in txs]
 
 
 @router.get("/payments")
@@ -322,22 +314,18 @@ def list_payments(
     db: Session = Depends(get_db),
     _: AdminPrincipal = Depends(VIEWER),
 ) -> list[dict]:
+    from app.api.routes.admin.console import payment_out
+
     stmt = select(Payment)
     if status:
         stmt = stmt.where(Payment.status == status)
-    return [
-        {
-            "id": p.id,
-            "transaction_id": p.transaction_id,
-            "provider": p.provider.value,
-            "provider_payment_id": p.provider_payment_id,
-            "status": p.status.value,
-            "amount": str(p.amount),
-            "currency": p.currency,
-            "created_at": p.created_at.isoformat(),
-        }
-        for p in db.execute(stmt.order_by(Payment.id.desc()).limit(page[0]).offset(page[1])).scalars()
-    ]
+    pays = list(db.execute(stmt.order_by(Payment.id.desc()).limit(page[0]).offset(page[1])).scalars())
+    codes = dict(
+        db.execute(
+            select(Transaction.id, Transaction.public_id).where(Transaction.id.in_({p.transaction_id for p in pays}))
+        ).all()
+    )
+    return [payment_out(p, codes) for p in pays]
 
 
 # ---- security / reports ------------------------------------------------------------------------
