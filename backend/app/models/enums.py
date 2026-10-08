@@ -156,6 +156,8 @@ class NotificationStatus(StrEnum):
     PENDING = "PENDING"
     SENT = "SENT"
     FAILED = "FAILED"
+    AWAITING_WINDOW = "AWAITING_WINDOW"  # outside the 24h window: waits until the user writes again
+    EXPIRED = "EXPIRED"  # no longer relevant (e.g. the offer it announced already expired)
 
 
 class AdminRole(StrEnum):

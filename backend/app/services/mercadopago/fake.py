@@ -16,6 +16,7 @@ class FakeMercadoPagoGateway:
         self.payments: dict[str, ProviderPayment] = {}
         self._ids = itertools.count(9_000_000_001)
         self.fail = False
+        self.merchant_orders: dict[str, list[str]] = {}
 
     def create_checkout(
         self,
@@ -36,7 +37,14 @@ class FakeMercadoPagoGateway:
         return CheckoutResult(checkout_id=cid, url=f"https://sandbox.mercadopago.test/checkout/{cid}")
 
     def simulate_payment(
-        self, external_reference: str, *, status: str = "approved", amount: Decimal | None = None, currency: str = "ARS"
+        self,
+        external_reference: str,
+        *,
+        status: str = "approved",
+        amount: Decimal | None = None,
+        currency: str = "ARS",
+        live_mode: bool = False,
+        collector_id: str | None = None,
     ) -> ProviderPayment:
         """Simulate the buyer paying at the provider (what Mercado Pago would record)."""
         checkout = next((c for c in self.checkouts.values() if c["external_reference"] == external_reference), None)
@@ -49,7 +57,8 @@ class FakeMercadoPagoGateway:
             amount=Decimal(str(amt)),
             currency=currency,
             external_reference=external_reference,
-            live_mode=False,
+            live_mode=live_mode,
+            collector_id=collector_id,
         )
         self.payments[pid] = p
         return p
@@ -67,3 +76,10 @@ class FakeMercadoPagoGateway:
 
             raise ExternalServiceError("Mercado Pago no responde.", code="MP_UNAVAILABLE")
         return [p for p in self.payments.values() if p.external_reference == external_reference]
+
+    def get_merchant_order_payment_ids(self, order_id: str) -> list[str]:
+        if self.fail:
+            from app.core.errors import ExternalServiceError
+
+            raise ExternalServiceError("Mercado Pago no responde.", code="MP_UNAVAILABLE")
+        return list(self.merchant_orders.get(str(order_id), []))

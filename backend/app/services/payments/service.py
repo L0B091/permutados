@@ -46,6 +46,7 @@ from app.services.notifications.service import enqueue
 from app.services.publications.state import transition_item
 from app.services.security.enforcement import record_security_event
 from app.services.system import config_service as cfg
+from app.services.users import pii
 from app.services.users.service import ensure_active
 
 log = logging.getLogger(__name__)
@@ -138,6 +139,13 @@ def create_payment(session: Session, bidder: User, transaction_public_id: str, g
 
 
 # ---- verification ----------------------------------------------------------------------------
+def process_merchant_order_notification(session: Session, order_id: str, gateway: PaymentGateway) -> list[Outcome]:
+    """``merchant_order`` notifications: resolve the order's payments and verify each one."""
+    return [
+        process_provider_notification(session, pid, gateway) for pid in gateway.get_merchant_order_payment_ids(order_id)
+    ]
+
+
 def process_provider_notification(session: Session, provider_payment_id: str, gateway: PaymentGateway) -> Outcome:
     """Webhook entry point: re-fetch the payment from the provider and apply it."""
     pp = gateway.get_payment(str(provider_payment_id))
@@ -230,6 +238,25 @@ def apply_provider_payment(session: Session, pp: ProviderPayment) -> Outcome:
             release_contact(session, tx)
             return Outcome.CONFIRMED_AND_RELEASED
         return Outcome.ALREADY_PROCESSED
+    invalid = _operation_problem(pp)
+    if invalid:
+        record_security_event(
+            session,
+            user_id=tx.bidder_id,
+            event_type=SecurityEventType.PAYMENT_MISMATCH,
+            severity=Severity.CRITICAL,
+            details={"transaction": tx.public_id, "reason": invalid, "provider_payment_id": pp.provider_payment_id},
+        )
+        audit(
+            session,
+            AuditAction.PAYMENT_VERIFICATION_FAILED,
+            actor_type=ActorType.WEBHOOK,
+            entity_type="payment",
+            entity_id=payment.id,
+            details={"transaction": tx.public_id, "reason": invalid},
+        )
+        session.flush()
+        return Outcome.MISMATCH
     if pp.amount != payment.amount or pp.amount != tx.amount or pp.currency.upper() != tx.currency.upper():
         record_security_event(
             session,
@@ -295,6 +322,16 @@ def apply_provider_payment(session: Session, pp: ProviderPayment) -> Outcome:
         return Outcome.CONFIRMED_RELEASE_DEFERRED
     release_contact(session, tx, item=item, offer=offer)
     return Outcome.CONFIRMED_AND_RELEASED
+
+
+def _operation_problem(pp: ProviderPayment) -> str | None:
+    """Checks that do not depend on our records: is this a real payment to OUR account?"""
+    s = get_settings()
+    if s.is_production and pp.live_mode is False:
+        return "sandbox_payment_in_production"
+    if s.mercadopago_collector_id and pp.collector_id and pp.collector_id != s.mercadopago_collector_id:
+        return "credited_to_another_account"
+    return None
 
 
 def _flag_refund(
@@ -372,6 +409,9 @@ def release_contact(
     owner = session.get(User, tx.owner_id)
     bidder = session.get(User, tx.bidder_id)
     assert owner is not None and bidder is not None
+    # The ONLY place where the counterparts' numbers are decrypted for disclosure.
+    owner_phone = pii.reveal_whatsapp_for_release(owner)
+    bidder_phone = pii.reveal_whatsapp_for_release(bidder)
 
     keyword = None
     for _ in range(20):
@@ -395,22 +435,22 @@ def release_contact(
         user_id=bidder.id,
         kind="CONTACT_RELEASED_BIDDER",
         body=templates.contact_released_bidder(
-            item_code=item.public_id, title=title, owner_phone=owner.phone or owner.whatsapp_id, keyword=keyword
+            item_code=item.public_id, title=title, owner_phone=owner_phone, keyword=keyword
         ),
         idempotency_key=f"tx:{tx.public_id}:released:bidder",
-        template_name="contact_released",
         payload={"transaction_id": tx.public_id},
+        sensitive=True,
     )
     enqueue(
         session,
         user_id=owner.id,
         kind="CONTACT_RELEASED_OWNER",
         body=templates.contact_released_owner(
-            item_code=item.public_id, title=title, bidder_phone=bidder.phone or bidder.whatsapp_id, keyword=keyword
+            item_code=item.public_id, title=title, bidder_phone=bidder_phone, keyword=keyword
         ),
         idempotency_key=f"tx:{tx.public_id}:released:owner",
-        template_name="contact_released",
         payload={"transaction_id": tx.public_id},
+        sensitive=True,
     )
     tx.status = TransactionStatus.CONTACT_RELEASED
     tx.released_at = now

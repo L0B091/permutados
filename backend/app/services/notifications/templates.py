@@ -75,7 +75,8 @@ def offer_accepted_bidder(*, item_code: str, title: str, fee: str, hours: int, d
     return (
         f"🎉 ¡El propietario aceptó tu oferta por {title} ({item_code})!\n"
         f"Para recibir su WhatsApp tenés que pagar la tarifa de liberación de contacto: {fee}.\n"
-        f"Tenés {hours}h para pagar (hasta el {local_time(due_at)}); si no, la operación se cancela."
+        f"Tenés {hours}h para pagar (hasta el {local_time(due_at)}); si no, la operación se cancela.\n"
+        f"Respondé PAGAR y te mando el link oficial de Mercado Pago."
     )
 
 
@@ -178,3 +179,41 @@ def publication_expiry_warning(*, item_code: str, title: str, expires_at: dateti
 
 def publication_expired(*, item_code: str, title: str) -> str:
     return f"Tu publicación {title} ({item_code}) venció y ya no se muestra. Podés publicarla de nuevo."
+
+
+# ---- inbound edge cases ----------------------------------------------------------------------------
+UNSUPPORTED_MESSAGE = (
+    "Por ahora entiendo mensajes de texto y fotos. Contame por escrito qué querés hacer: publicar, buscar, "
+    "ofertar o ver tus operaciones."
+)
+IMAGE_DOWNLOAD_FAILED = "No pude descargar tu foto. ¿Me la mandás de nuevo, por favor?"
+LOCATION_NOT_ALLOWED = (
+    "Por seguridad no usamos ubicaciones exactas. Decime solo tu barrio o localidad (por ejemplo: Palermo, Quilmes)."
+)
+
+# ---- PII-free summaries for the paid fallback template (outside the 24h window) -------------------
+# Sent as the single {{1}} parameter of WHATSAPP_FALLBACK_TEMPLATE. Never include phones, names or links.
+_SUMMARIES = {
+    "REPLY": "tenés una respuesta pendiente",
+    "OFFER_CREATED_BIDDER": "tu oferta fue enviada y vence en 24h",
+    "OFFER_RECEIVED_OWNER": "recibiste una oferta: tenés 24h para aceptar o rechazar",
+    "OFFER_ACCEPTED_BIDDER": "aceptaron tu oferta: tenés 24h para pagar la tarifa",
+    "OFFER_ACCEPTED_OWNER": "aceptaste una oferta, esperamos el pago del ofertante",
+    "OFFER_REJECTED_BIDDER": "rechazaron tu oferta",
+    "OFFER_EXPIRED_BIDDER": "tu oferta venció",
+    "OFFER_EXPIRED_OWNER": "una oferta que recibiste venció",
+    "OFFER_CANCELLED_OWNER": "el ofertante canceló su oferta",
+    "OFFER_WITHDRAWN_BIDDER": "el propietario se arrepintió de la operación",
+    "ITEM_UNAVAILABLE_BIDDER": "un artículo de tu oferta ya no está disponible",
+    "OFFER_CLOSED_COUNTERPART_BLOCKED": "una operación tuya fue cerrada",
+    "PAYMENT_TIMEOUT_BIDDER": "venció el plazo para pagar una operación",
+    "PAYMENT_TIMEOUT_OWNER": "el ofertante no pagó a tiempo, tu publicación volvió a estar activa",
+    "CONTACT_RELEASED_BIDDER": "el pago fue confirmado y tus datos de contacto están listos",
+    "CONTACT_RELEASED_OWNER": "el ofertante pagó y los datos de contacto están listos",
+    "PUBLICATION_EXPIRY_WARNING": "una publicación tuya está por vencer",
+    "PUBLICATION_EXPIRED": "una publicación tuya venció",
+}
+
+
+def summary_for(kind: str) -> str:
+    return _SUMMARIES.get(kind, "tenés una novedad en Permutados")

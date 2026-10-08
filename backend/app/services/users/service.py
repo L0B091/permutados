@@ -1,40 +1,44 @@
 from __future__ import annotations
 
-import re
-
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from app.core.errors import NotFound, UserBlocked, ValidationFailed
+from app.core.errors import NotFound, UserBlocked
 from app.models.enums import ActorType, UserStatus
 from app.models.user import User
 from app.services.audit.service import AuditAction, audit
+from app.services.users.pii import WaIdentity, encrypt_display_name, identity_from_wa_id, whatsapp_hash
 
-_WA_ID = re.compile(r"^[0-9]{6,20}$")
-
-
-def normalize_whatsapp_id(wa_id: str) -> str:
-    wa = re.sub(r"[^\d]", "", wa_id or "")
-    if not _WA_ID.match(wa):
-        raise ValidationFailed("invalid WhatsApp id", code="INVALID_WHATSAPP_ID")
-    return wa
+__all__ = ["get_or_create_by_whatsapp", "get_or_create_by_identity", "find_by_whatsapp", "get_user", "ensure_active"]
 
 
 def get_or_create_by_whatsapp(session: Session, wa_id: str, display_name: str | None = None) -> User:
-    """Identity is always the WhatsApp ID, never the profile name."""
-    wa = normalize_whatsapp_id(wa_id)
+    """Identity is always the WhatsApp ID, never the profile name. The number is encrypted immediately."""
+    return get_or_create_by_identity(session, identity_from_wa_id(wa_id), display_name)
+
+
+def get_or_create_by_identity(session: Session, identity: WaIdentity, display_name: str | None = None) -> User:
     stmt = (
         insert(User)
-        .values(whatsapp_id=wa, phone=wa, display_name=(display_name or None) and display_name[:120])
-        .on_conflict_do_nothing(index_elements=["whatsapp_id"])
+        .values(
+            whatsapp_hash=identity.hash,
+            whatsapp_enc=identity.enc,
+            whatsapp_last4=identity.last4,
+            display_name_enc=encrypt_display_name(display_name),
+        )
+        .on_conflict_do_nothing(index_elements=["whatsapp_hash"])
         .returning(User.id)
     )
     new_id = session.execute(stmt).scalar_one_or_none()
-    user = session.execute(select(User).where(User.whatsapp_id == wa)).scalar_one()
+    user = session.execute(select(User).where(User.whatsapp_hash == identity.hash)).scalar_one()
     if new_id is not None:
         audit(session, AuditAction.USER_CREATED, actor_type=ActorType.SYSTEM, entity_type="user", entity_id=user.id)
     return user
+
+
+def find_by_whatsapp(session: Session, wa_id: str) -> User | None:
+    return session.execute(select(User).where(User.whatsapp_hash == whatsapp_hash(wa_id))).scalar_one_or_none()
 
 
 def get_user(session: Session, user_id: int, *, for_update: bool = False) -> User:

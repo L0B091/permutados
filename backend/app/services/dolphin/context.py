@@ -16,6 +16,7 @@ from app.models.enums import OfferStatus
 from app.models.item import Item
 from app.models.offer import Offer, Transaction
 from app.models.user import User
+from app.services.conversation import state_machine
 from app.services.notifications.templates import money
 from app.services.system import config_service as cfg
 
@@ -24,6 +25,7 @@ CONTEXT_KEYS = frozenset(
         "session_id",
         "conversation_state",
         "current_intent",
+        "expected_next",
         "current_item_id",
         "search_session_id",
         "selected_item_id",
@@ -78,6 +80,11 @@ def build_context(session: Session, user: User, conv: ConversationSession) -> di
         "session_id": conv.id,
         "conversation_state": conv.conversation_state,
         "current_intent": conv.current_intent,
+        "expected_next": state_machine.expected_next(
+            state_machine.State(conv.conversation_state)
+            if conv.conversation_state in state_machine.State.__members__
+            else state_machine.State.IDLE
+        ),
         "current_item_id": _code(session, Item, conv.current_item_id),
         "search_session_id": conv.search_session_id,
         "selected_item_id": _code(session, Item, conv.selected_item_id),

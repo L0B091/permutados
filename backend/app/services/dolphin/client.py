@@ -91,3 +91,17 @@ class OpenAICompatibleDolphinClient:
             return self._client.get(f"{self.base_url}/models", timeout=5).status_code == 200
         except httpx.HTTPError:
             return False
+
+
+class UnconfiguredDolphinClient:
+    """Used by the worker while the Dolphin server does not exist: every turn gets the safe fallback reply."""
+
+    def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> ChatResponse:
+        raise DolphinUnavailable("DOLPHIN_BASE_URL is not configured")
+
+
+def default_dolphin_client() -> DolphinClient:
+    try:
+        return OpenAICompatibleDolphinClient()
+    except DolphinUnavailable:
+        return UnconfiguredDolphinClient()

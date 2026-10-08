@@ -618,7 +618,7 @@
     "type": "function",
     "function": {
       "name": "create_payment",
-      "description": "Ofertante: obtener el link oficial de Mercado Pago para pagar la tarifa.",
+      "description": "Ofertante: generar el link oficial de Mercado Pago. El backend se lo envía directamente; no lo repitas.",
       "parameters": {
         "additionalProperties": false,
         "properties": {

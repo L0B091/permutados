@@ -12,3 +12,4 @@ httpx==0.28.1
 redis==8.1.0
 APScheduler==3.11.3
 python-multipart==0.0.32
+cryptography==50.0.2

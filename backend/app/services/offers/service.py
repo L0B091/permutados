@@ -252,6 +252,7 @@ def create_offer(
         body=bidder_msg,
         idempotency_key=f"offer:{offer.public_id}:created:bidder",
         payload={"offer_id": offer.public_id, "expires_at": offer.expires_at.isoformat(), "hours": hours},
+        expires_at=offer.expires_at,
     )
     enqueue(
         session,
@@ -259,8 +260,8 @@ def create_offer(
         kind="OFFER_RECEIVED_OWNER",
         body=owner_msg,
         idempotency_key=f"offer:{offer.public_id}:created:owner",
-        template_name="offer_received",
         payload={"offer_id": offer.public_id, "expires_at": offer.expires_at.isoformat(), "hours": hours},
+        expires_at=offer.expires_at,
     )
     return OfferResult(offer, bidder_msg, owner_msg)
 
@@ -438,8 +439,8 @@ def accept_offer(session: Session, owner: User, offer_public_id: str) -> OfferRe
         kind="OFFER_ACCEPTED_BIDDER",
         body=bidder_msg,
         idempotency_key=f"offer:{offer.public_id}:accepted:bidder",
-        template_name="offer_accepted",
         payload={"transaction_id": tx.public_id},
+        expires_at=tx.payment_due_at,
     )
     enqueue(
         session,
@@ -447,6 +448,7 @@ def accept_offer(session: Session, owner: User, offer_public_id: str) -> OfferRe
         kind="OFFER_ACCEPTED_OWNER",
         body=owner_msg,
         idempotency_key=f"offer:{offer.public_id}:accepted:owner",
+        expires_at=tx.payment_due_at,
     )
     return OfferResult(offer, bidder_msg, owner_msg, tx)
 

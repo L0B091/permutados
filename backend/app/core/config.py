@@ -39,6 +39,14 @@ class Settings(BaseSettings):
     whatsapp_phone_number_id: str = ""
     whatsapp_business_account_id: str = ""
     whatsapp_api_version: str = "v23.0"
+    # Outside the free 24h customer-service window only approved templates may be sent. The fallback template
+    # takes ONE body parameter (a short, PII-free summary) and invites the user to reply, which reopens the
+    # window; the full queued messages are then delivered.
+    whatsapp_fallback_template: str = "permutados_novedad"
+    whatsapp_template_language: str = "es_AR"
+    whatsapp_session_window_hours: int = 24
+    whatsapp_window_safety_minutes: int = 15
+    whatsapp_max_retries: int = 3
 
     # --- Mercado Pago ------------------------------------------------------
     mercadopago_access_token: SecretStr = SecretStr("")
@@ -46,6 +54,10 @@ class Settings(BaseSettings):
     mercadopago_webhook_secret: SecretStr = SecretStr("")
     mercadopago_environment: Literal["sandbox", "production"] = "sandbox"
     mercadopago_signature_tolerance_seconds: int = 600
+    mercadopago_back_url: str = ""  # optional page shown after paying (auto_return only when set)
+    mercadopago_statement_descriptor: str = "PERMUTADOS"
+    mercadopago_collector_id: str = ""  # optional: when set, payments credited to another account are rejected
+    mercadopago_max_retries: int = 3
 
     # --- URLs --------------------------------------------------------------
     app_base_url: str = "http://localhost:8000"
@@ -62,7 +74,10 @@ class Settings(BaseSettings):
 
     # --- storage / crypto --------------------------------------------------
     storage_path: str = "./storage"
+    # Field-level encryption (AES-256-GCM). urlsafe-base64 of 32 random bytes. Old keys (comma separated) are
+    # only used to decrypt during a rotation (see scripts/rotate_encryption_key.py).
     encryption_key: SecretStr = SecretStr("")
+    encryption_old_keys: SecretStr = SecretStr("")
     cors_allowed_origins: str = ""
 
     # --- business rules (defaults; live values are in system_config) -------
@@ -92,6 +107,14 @@ class Settings(BaseSettings):
 
     # --- misc --------------------------------------------------------------
     rate_limit_user_messages_per_minute: int = 30
+
+    # --- worker: inbound queue + outbox --------------------------------------
+    inbound_poll_seconds: int = 2
+    inbound_batch_size: int = 20
+    inbound_max_attempts: int = 5
+    outbox_poll_seconds: int = 2
+    outbox_batch_size: int = 50
+    outbox_max_attempts: int = 8
 
     @field_validator("database_url")
     @classmethod
@@ -139,6 +162,12 @@ class Settings(BaseSettings):
             problems.append("MERCADOPAGO_WEBHOOK_SECRET is required to verify webhooks")
         if "*" in self.cors_origins:
             problems.append("CORS_ALLOWED_ORIGINS must not contain '*'")
+        from app.core import crypto
+
+        try:
+            crypto.parse_key(self.encryption_key.get_secret_value())
+        except ValueError as e:
+            problems.append(f"ENCRYPTION_KEY: {e}")
         return problems
 
 

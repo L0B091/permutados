@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, Numeric, String, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, Numeric, String, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -70,5 +70,10 @@ class WebhookEvent(IdMixin, Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="RECEIVED", server_default="RECEIVED")
     error: Mapped[str | None] = mapped_column(String(500))
     payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    __table_args__ = (Index("uq_webhook_events_provider_key", "provider", "dedupe_key", unique=True),)
+    __table_args__ = (
+        Index("uq_webhook_events_provider_key", "provider", "dedupe_key", unique=True),
+        Index("ix_webhook_events_queue", "provider", "status", "id"),
+    )

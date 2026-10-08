@@ -15,14 +15,16 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db, payment_gateway
 from app.core.clock import utcnow
 from app.core.config import get_settings
-from app.core.errors import ExternalServiceError
+from app.core.errors import ExternalServiceError, ValidationFailed
 from app.models.enums import SecurityEventType, Severity
 from app.models.payment import WebhookEvent
+from app.services.conversation.inbound_queue import queue_payload
 from app.services.mercadopago import signature as mp_sig
-from app.services.payments.service import process_provider_notification
+from app.services.notifications.outbox import apply_status_update
+from app.services.payments.service import process_merchant_order_notification, process_provider_notification
 from app.services.security.enforcement import record_security_event
 from app.services.whatsapp import signature as wa_sig
-from app.services.whatsapp.parser import parse_webhook
+from app.services.whatsapp.parser import parse_statuses, parse_webhook
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
@@ -81,17 +83,21 @@ async def whatsapp_receive(request: Request, db: Session = Depends(get_db)) -> d
         raise HTTPException(400, "invalid json") from None
     accepted = 0
     for msg in parse_webhook(payload):
-        ev = _claim(
-            db,
-            "whatsapp",
-            f"msg:{msg.message_id}",
-            {"type": msg.type, "from": msg.wa_id, "ts": msg.timestamp, "media": list(msg.media_ids)},
-        )
-        if ev is not None:
+        try:
+            data = queue_payload(msg)
+        except ValidationFailed:
+            continue  # malformed sender id: never queued
+        if _claim(db, "whatsapp", f"msg:{msg.message_id}", data) is not None:
             accepted += 1
-    # PHASE 1: messages are durably queued (webhook_events, status RECEIVED). The phase 2 worker downloads
-    # media, runs conversation.service.handle_inbound and sends replies from the outbox.
-    return {"received": accepted}
+    statuses = 0
+    for st in parse_statuses(payload):
+        if _claim(db, "whatsapp_status", f"status:{st.message_id}:{st.status}", {"status": st.status}) is None:
+            continue
+        if apply_status_update(db, st.message_id, st.status, st.error_code):
+            statuses += 1
+    # Messages are durably queued (webhook_events, status RECEIVED, encrypted envelope) and processed by the
+    # worker (conversation.inbound_queue). Meta gets its 200 right away.
+    return {"received": accepted, "statuses": statuses}
 
 
 # ---- Mercado Pago --------------------------------------------------------------------------------
@@ -127,7 +133,7 @@ async def mercadopago_receive(
     ev = _claim(db, "mercadopago", f"{topic}:{data_id}:{request_id or '-'}", {"type": topic, "data_id": data_id})
     if ev is None:
         return Response(status_code=200)  # duplicate / replayed delivery: already handled
-    if topic != "payment":
+    if topic not in ("payment", "merchant_order", "topic_merchant_order_wh"):
         ev.status, ev.processed_at = "IGNORED", utcnow()
         return Response(status_code=200)
     if gateway is None:
@@ -135,7 +141,10 @@ async def mercadopago_receive(
         db.commit()
         raise HTTPException(503, "payments not configured")
     try:
-        outcome = process_provider_notification(db, data_id, gateway)
+        if topic == "payment":
+            outcome_value = process_provider_notification(db, data_id, gateway).value
+        else:
+            outcome_value = ",".join(o.value for o in process_merchant_order_notification(db, data_id, gateway))
     except ExternalServiceError:
         key = ev.dedupe_key
         db.rollback()  # nothing from this attempt is kept, except a FAILED ledger row so a retry reprocesses
@@ -155,5 +164,5 @@ async def mercadopago_receive(
         db.commit()
         raise HTTPException(502, "provider unavailable, retry later") from None
     ev.status, ev.processed_at = "PROCESSED", utcnow()
-    ev.payload = {**(ev.payload or {}), "outcome": outcome.value}
+    ev.payload = {**(ev.payload or {}), "outcome": outcome_value or "NO_PAYMENTS"}
     return Response(status_code=200)

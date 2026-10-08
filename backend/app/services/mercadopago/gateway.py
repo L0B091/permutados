@@ -39,6 +39,7 @@ class ProviderPayment:
     currency: str
     external_reference: str | None
     live_mode: bool | None = None
+    collector_id: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -61,3 +62,5 @@ class PaymentGateway(Protocol):
     def get_payment(self, provider_payment_id: str) -> ProviderPayment | None: ...
 
     def search_payments(self, external_reference: str) -> list[ProviderPayment]: ...
+
+    def get_merchant_order_payment_ids(self, order_id: str) -> list[str]: ...

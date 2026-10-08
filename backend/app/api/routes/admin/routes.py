@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import AdminPrincipal, client_ip, get_db, require_role
-from app.core.errors import NotFound
+from app.core.errors import NotFound, ValidationFailed
 from app.models.audit import AuditLog
 from app.models.channel import ChannelPost
 from app.models.conversation import ConversationSession, Message
@@ -38,6 +38,7 @@ from app.services.audit.service import AuditAction, audit
 from app.services.channel import service as channel
 from app.services.publications import service as pubs
 from app.services.system import config_service as cfg
+from app.services.users import pii
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 VIEWER = require_role(AdminRole.VIEWER)
@@ -52,8 +53,7 @@ def _page(limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0, le=
 def _user_out(u: User) -> dict[str, Any]:
     return {
         "id": u.id,
-        "whatsapp_id": u.whatsapp_id,
-        "display_name": u.display_name,
+        "whatsapp": pii.masked_whatsapp(u),  # numbers are encrypted; admins only see the last 4 digits
         "status": u.status.value,
         "warnings_count": u.warnings_count,
         "evasion_strikes": u.evasion_strikes,
@@ -116,7 +116,11 @@ def list_users(
 ) -> list[dict]:
     stmt = select(User)
     if q:
-        stmt = stmt.where((User.whatsapp_id.contains(q)) | (User.display_name.ilike(f"%{q}%")))
+        # Exact lookup by full WhatsApp number through the blind index (no partial/name search on encrypted PII).
+        try:
+            stmt = stmt.where(User.whatsapp_hash == pii.whatsapp_hash(q))
+        except ValidationFailed:
+            return []
     if status:
         stmt = stmt.where(User.status == status)
     rows = db.execute(stmt.order_by(User.id.desc()).limit(page[0]).offset(page[1])).scalars()
@@ -142,6 +146,7 @@ def get_user(
     items = db.execute(select(Item).where(Item.owner_id == u.id).order_by(Item.id.desc()).limit(50)).scalars()
     return {
         **_user_out(u),
+        "display_name": pii.reveal_display_name_for_admin(u),  # single-user view, audited above
         "warnings": [{"id": w.id, "reason": w.reason, "created_at": w.created_at.isoformat()} for w in warnings],
         "bans": [{"id": b.id, "status": b.status.value, "reason": b.reason} for b in bans],
         "items": [_item_out(i) for i in items],
@@ -209,6 +214,8 @@ def conversation(
                 "direction": m.direction.value,
                 "type": m.message_type.value,
                 "body": m.body,
+                # Encrypted evidence of a blocked (anti-evasion) message, for the moderator reviewing the case.
+                "evidence": pii.reveal_message_evidence_for_admin(m) if m.blocked else None,
                 "blocked": m.blocked,
                 "item_id": m.item_id,
                 "offer_id": m.offer_id,

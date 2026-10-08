@@ -57,7 +57,7 @@ def warn_expiring_publications(session: Session, now=None) -> int:
                 item_code=it.public_id, title=it.title or "", expires_at=it.expires_at
             ),
             idempotency_key=f"item:{it.public_id}:expiry_warning",
-            template_name="publication_expiring",
+            expires_at=it.expires_at,
         )
     return len(items)
 
@@ -96,6 +96,26 @@ def run_with_lock(name: str, fn: Callable[[Session], int]) -> int | None:
         if n:
             audit(session, "WORKER_JOB", actor_type=ActorType.WORKER, details={"job": name, "affected": n})
         return n
+
+
+def messaging_jobs(*, dolphin, wa, gateway=None, storage=None) -> dict[str, tuple[Callable[[], int], int]]:
+    """Jobs that manage their own transactions (one per message): inbound queue and outbox."""
+    from app.core.config import get_settings
+    from app.services.conversation.inbound_queue import process_inbound_queue
+    from app.services.notifications.outbox import dispatch_outbox
+
+    s = get_settings()
+    jobs: dict[str, tuple[Callable[[], int], int]] = {
+        "process_inbound_queue": (
+            lambda: process_inbound_queue(dolphin=dolphin, wa=wa, gateway=gateway, storage=storage).processed,
+            s.inbound_poll_seconds,
+        ),
+    }
+    if wa is not None:
+        jobs["dispatch_outbox"] = (lambda: dispatch_outbox(wa).total, s.outbox_poll_seconds)
+    else:
+        log.warning("WhatsApp is not configured: outbound messages stay queued in the outbox")
+    return jobs
 
 
 def job_definitions(gateway=None) -> dict[str, tuple[Callable[[Session], int], int]]:

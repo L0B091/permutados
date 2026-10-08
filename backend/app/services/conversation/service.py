@@ -5,8 +5,9 @@
 3. per-user rate limit
 4. anti-evasion on the raw text (strike + warning/suspension; message blocked, never forwarded)
 5. images: strict validation before anything else ("no avanzar hasta tener imagen válida")
-6. "más / siguiente / ver más" served deterministically from the active search session
-7. otherwise Dolphin runs the turn through allowlisted tools
+6. state reconciled from the database + deterministic intent detection (hint for Dolphin)
+7. "más / siguiente / ver más" served deterministically from the active search session
+8. otherwise Dolphin runs the turn through allowlisted tools (the backend validates and decides)
 Replies are written to the notifications outbox with idempotency keys.
 """
 
@@ -19,20 +20,25 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.core.clock import utcnow
+from app.core.config import get_settings
 from app.core.ratelimit import get_rate_limiter
 from app.models.conversation import ConversationSession, Message
 from app.models.enums import MessageDirection, MessageType, SecurityEventType, Severity, UserStatus
+from app.services.conversation import state_machine
+from app.services.conversation.intents import Intent, detect_intent
 from app.services.dolphin.client import DolphinClient
 from app.services.dolphin.orchestrator import run_turn
 from app.services.mercadopago.gateway import PaymentGateway
 from app.services.notifications import templates
+from app.services.notifications.outbox import reopen_window
 from app.services.notifications.service import enqueue
 from app.services.publications.image_validation import ImageRejected, validate_images
 from app.services.publications.storage import ImageStorage
 from app.services.search import service as search
-from app.services.search.query_parser import is_next_page_command
-from app.services.security.enforcement import inspect_and_enforce, record_security_event
-from app.services.users.service import get_or_create_by_whatsapp
+from app.services.security.anti_evasion import Detection, EvasionResult
+from app.services.security.enforcement import inspect_and_enforce, record_security_event, register_attempt
+from app.services.users.pii import WaIdentity, identity_from_wa_id, seal_message_evidence
+from app.services.users.service import get_or_create_by_identity
 
 
 @dataclass
@@ -75,41 +81,52 @@ def _reply(session: Session, conv: ConversationSession, user_id: int, inbound: M
 def handle_inbound(
     session: Session,
     *,
-    wa_id: str,
+    wa_id: str | None = None,
+    identity: WaIdentity | None = None,
     text: str | None,
     images: list[bytes] | None = None,
     image_mime: str | None = None,
+    message_type: str | None = None,
     provider_message_id: str | None = None,
     profile_name: str | None = None,
+    media_failed: bool = False,
     client: DolphinClient,
     gateway: PaymentGateway | None = None,
     storage: ImageStorage | None = None,
 ) -> InboundResult:
-    user = get_or_create_by_whatsapp(session, wa_id, profile_name)
+    if identity is None:
+        if wa_id is None:
+            raise ValueError("wa_id or identity is required")
+        identity = identity_from_wa_id(wa_id)
+    user = get_or_create_by_identity(session, identity, profile_name)
     if (
         provider_message_id
         and session.execute(select(Message.id).where(Message.provider_message_id == provider_message_id)).first()
     ):
         return InboundResult(duplicate=True)
+    now = utcnow()
     conv = get_active_session(session, user.id)
-    conv.last_inbound_at = utcnow()
+    conv.last_inbound_at = now
+    reopen_window(session, user, now)  # 24h customer-service window starts again
+    mtype = message_type or ("image" if images else "text")
     inbound = Message(
         session_id=conv.id,
         user_id=user.id,
         direction=MessageDirection.INBOUND,
-        message_type=MessageType.IMAGE if images else MessageType.TEXT,
+        message_type=MessageType.IMAGE if mtype == "image" else MessageType.TEXT,
         provider_message_id=provider_message_id,
         body=(text or None) and text[:4000],
-        media={"count": len(images)} if images else None,
+        media={"count": len(images)} if images else ({"type": mtype} if mtype != "text" else None),
     )
     session.add(inbound)
     session.flush()
 
-    if user.status != UserStatus.ACTIVE:
-        _reply(session, conv, user.id, inbound, [templates.ACCOUNT_SUSPENDED])
-        return InboundResult([templates.ACCOUNT_SUSPENDED], blocked=True)
+    def done(replies: list[str], **kw: bool) -> InboundResult:
+        _reply(session, conv, user.id, inbound, replies)
+        return InboundResult(replies, **kw)
 
-    from app.core.config import get_settings
+    if user.status != UserStatus.ACTIVE:
+        return done([templates.ACCOUNT_SUSPENDED], blocked=True)
 
     if not get_rate_limiter().hit(f"user:{user.id}", get_settings().rate_limit_user_messages_per_minute, 60):
         record_security_event(
@@ -121,24 +138,45 @@ def handle_inbound(
         )
         return InboundResult([], blocked=True)
 
+    if mtype == "unsupported":
+        return done([templates.UNSUPPORTED_MESSAGE])
+    if mtype == "location":
+        inbound.body = None
+        return done([templates.LOCATION_NOT_ALLOWED])
+    if media_failed:
+        return done([templates.IMAGE_DOWNLOAD_FAILED])
+
     verdict = inspect_and_enforce(session, user.id, text, source="message", message_id=inbound.id)
+    if not verdict.blocked and mtype == "contacts":
+        # A contact card is contact data even when the detector finds no number in it.
+        verdict = register_attempt(
+            session,
+            user.id,
+            EvasionResult([Detection("CONTACT_CARD", "contacts message")]),
+            source="message",
+            message_id=inbound.id,
+        )
     if verdict.blocked:
         inbound.blocked = True
-        _reply(session, conv, user.id, inbound, [verdict.message or ""])
-        return InboundResult([verdict.message or ""], blocked=True)
+        # No plaintext evidence is kept: encrypted for the admin who reviews the case.
+        inbound.body_enc = seal_message_evidence(text) if text else None
+        inbound.body = None
+        return done([verdict.message or ""], blocked=True)
 
     if images:
         try:
             validate_images(images)
         except ImageRejected as e:
-            _reply(session, conv, user.id, inbound, [e.message])
-            return InboundResult([e.message])
+            return done([e.message])
 
-    if text and not images and is_next_page_command(text) and conv.search_session_id:
+    state = state_machine.reconcile(session, user, conv)
+    intent = detect_intent(text, has_image=bool(images), state=state.value)
+    conv.current_intent = intent.value
+
+    if intent == Intent.NEXT_PAGE and not images and conv.search_session_id:
         page = search.next_page(session, user, conv.search_session_id)
-        reply = _format_page(page)
-        _reply(session, conv, user.id, inbound, [reply])
-        return InboundResult([reply])
+        state_machine.transition(conv, state_machine.State.BROWSING_RESULTS, reason="next_page")
+        return done([_format_page(page)])
 
     turn = run_turn(
         session,
@@ -152,8 +190,7 @@ def handle_inbound(
         image_mime=image_mime,
         inbound_message_id=inbound.id,
     )
-    _reply(session, conv, user.id, inbound, turn.replies)
-    return InboundResult(turn.replies, used_dolphin=True)
+    return done(turn.replies, used_dolphin=True)
 
 
 def _format_page(page: search.SearchPage) -> str:

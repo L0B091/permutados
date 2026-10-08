@@ -149,10 +149,11 @@ def run_turn(
             resp = client.chat(messages, tools)
         except DolphinUnavailable:
             result.dolphin_available = False
-            result.replies = [*map(output_filter, ctx.outbox), DOLPHIN_DOWN_REPLY]
+            result.replies = [*ctx.backend_messages, *map(output_filter, ctx.outbox), DOLPHIN_DOWN_REPLY]
             return result
         if not resp.tool_calls:
-            result.replies = [output_filter(t) for t in [*ctx.outbox, resp.content or ""] if t]
+            model_text = [output_filter(t) for t in [*ctx.outbox, resp.content or ""] if t]
+            result.replies = [*ctx.backend_messages, *model_text]
             return result
         messages.append(
             {
@@ -177,7 +178,9 @@ def run_turn(
             )
             if out.get("error") == "EVASION_BLOCKED":
                 # Deterministic message from the backend; the turn ends here.
-                result.replies = [out.get("message", "")]
+                result.replies = [*ctx.backend_messages, out.get("message", "")]
                 return result
-    result.replies = [output_filter(t) for t in ctx.outbox] or ["¿Me lo repetís en pocas palabras?"]
+    result.replies = [*ctx.backend_messages, *(output_filter(t) for t in ctx.outbox)] or [
+        "¿Me lo repetís en pocas palabras?"
+    ]
     return result

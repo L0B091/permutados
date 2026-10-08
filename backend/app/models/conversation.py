@@ -77,6 +77,8 @@ class Message(IdMixin, Base):
     message_type: Mapped[MessageType] = mapped_column(pg_enum(MessageType, "message_type"), nullable=False)
     provider_message_id: Mapped[str | None] = mapped_column(String(128))
     body: Mapped[str | None] = mapped_column(Text)
+    # Blocked messages (anti-evasion) keep NO plaintext: the evidence is encrypted for admin review.
+    body_enc: Mapped[str | None] = mapped_column(Text)
     media: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     blocked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     item_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("items.id", ondelete="SET NULL"))
@@ -89,13 +91,21 @@ class Notification(IdMixin, TimestampMixin, Base):
     """Outbox of messages to deliver via WhatsApp. ``idempotency_key`` prevents duplicates on retry."""
 
     __tablename__ = "notifications"
-    __table_args__ = (Index("ix_notifications_status_created", "status", "created_at"),)
+    __table_args__ = (
+        Index("ix_notifications_status_created", "status", "created_at"),
+        Index("ix_notifications_dispatch", "status", "next_attempt_at"),
+    )
 
     user_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    # For sensitive notifications (contact release) ``body`` holds a redacted placeholder and the rendered text
+    # is in ``body_enc``; it is decrypted in memory only to hand it to WhatsApp.
     body: Mapped[str] = mapped_column(Text, nullable=False)
+    body_enc: Mapped[str | None] = mapped_column(Text)
+    sensitive: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    summary: Mapped[str | None] = mapped_column(String(200))  # PII-free text for the fallback template
     template_name: Mapped[str | None] = mapped_column(String(80))  # Meta template if outside the 24h window
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
     idempotency_key: Mapped[str] = mapped_column(String(160), unique=True, nullable=False)
@@ -109,3 +119,6 @@ class Notification(IdMixin, TimestampMixin, Base):
     last_error: Mapped[str | None] = mapped_column(String(500))
     provider_message_id: Mapped[str | None] = mapped_column(String(128))
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # don't deliver after this
+    channel: Mapped[str | None] = mapped_column(String(20))  # SESSION | TEMPLATE (how it was delivered)

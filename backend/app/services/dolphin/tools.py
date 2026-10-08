@@ -28,6 +28,7 @@ from app.models.offer import Offer, Transaction
 from app.models.report import Report
 from app.models.user import User
 from app.services.audit.service import AuditAction, audit
+from app.services.conversation import state_machine
 from app.services.mercadopago.gateway import PaymentGateway
 from app.services.offers import service as offers
 from app.services.payments import service as payments
@@ -163,7 +164,10 @@ class ToolContext:
     gateway: PaymentGateway | None = None
     storage: ImageStorage | None = None
     inbound_images: list[bytes] = field(default_factory=list)
-    outbox: list[str] = field(default_factory=list)  # messages queued via send_message
+    outbox: list[str] = field(default_factory=list)  # messages queued via send_message (model text: filtered)
+    # Messages authored by the BACKEND (e.g. the official Mercado Pago link). Delivered verbatim, never passed
+    # through the model or the output filter (which would block the link as an "external URL").
+    backend_messages: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -187,7 +191,6 @@ def _create_publication(ctx: ToolContext, a: CreatePublicationArgs) -> dict[str,
     item = pubs.start_draft(ctx.session, ctx.user, ctx.inbound_images, storage=ctx.storage)
     pubs.set_ai_identification(ctx.session, ctx.user, item.id, a.model_dump(exclude_none=True))
     ctx.conversation.current_item_id = item.id
-    ctx.conversation.conversation_state = "PUBLISHING_CONFIRM_IDENTIFICATION"
     return {
         "ok": True,
         "item_id": item.public_id,
@@ -212,7 +215,6 @@ def _get_publication(ctx: ToolContext, a: GetPublicationArgs) -> dict[str, Any]:
             if not out["missing"]:
                 out["preview"] = pubs.preview_text(ctx.session, item)
                 ctx.conversation.context = {**ctx.conversation.context, "preview_shown_for": item.public_id}
-                ctx.conversation.conversation_state = "PUBLISHING_PREVIEW"
         return out
     if item.status not in (ItemStatus.PUBLISHED,):
         return {"ok": True, "item_id": item.public_id, "available": False}
@@ -253,7 +255,6 @@ def _update_publication(ctx: ToolContext, a: UpdatePublicationArgs) -> dict[str,
                     "message": "Primero mostrale la previsualización (get_publication) y pedile confirmación.",
                 }
             pubs.publish(ctx.session, ctx.user, item.id)
-            ctx.conversation.conversation_state = "IDLE"
             ctx.conversation.context = {k: v for k, v in ctx.conversation.context.items() if k != "preview_shown_for"}
             from app.services.notifications import templates
             from app.services.system import config_service as cfg
@@ -300,7 +301,6 @@ def _delete_publication(ctx: ToolContext, a: DeletePublicationArgs) -> dict[str,
 
 def _search_result(ctx: ToolContext, page: search.SearchPage) -> dict[str, Any]:
     ctx.conversation.search_session_id = page.search_session_id
-    ctx.conversation.conversation_state = "BROWSING_RESULTS"
     return {
         "ok": True,
         "page": page.page,
@@ -339,7 +339,6 @@ def _select_publication(ctx: ToolContext, a: SelectArgs) -> dict[str, Any]:
         ctx.session, ctx.user, a.reference, search_session_id=ctx.conversation.search_session_id
     )
     ctx.conversation.selected_item_id = item.id
-    ctx.conversation.conversation_state = "ITEM_SELECTED"
     return {"ok": True, **_item_brief(ctx.session, item, owner_view=False)}
 
 
@@ -360,7 +359,6 @@ def _create_offer(ctx: ToolContext, a: CreateOfferArgs) -> dict[str, Any]:
         message=a.message,
     )
     ctx.conversation.current_offer_id = res.offer.id
-    ctx.conversation.conversation_state = "OFFER_PENDING"
     return {
         "ok": True,
         "offer_id": res.offer.public_id,
@@ -465,7 +463,14 @@ def _create_payment(ctx: ToolContext, a: TxRefArgs) -> dict[str, Any]:
         raise DomainError("Los pagos no están disponibles en este momento.", code="PAYMENTS_UNAVAILABLE")
     link = payments.create_payment(ctx.session, ctx.user, _resolve_tx_code(ctx, a.transaction_id), ctx.gateway)
     ctx.conversation.transaction_id = link.payment.transaction_id
-    return {"ok": True, "checkout_url": link.url, "message_for_user": link.message}
+    if link.message not in ctx.backend_messages:
+        ctx.backend_messages.append(link.message)
+    return {
+        "ok": True,
+        "checkout_url": link.url,
+        "link_already_sent_by_backend": True,
+        "note": "El backend ya le envió el link oficial de Mercado Pago. No repitas el link.",
+    }
 
 
 def _get_payment_status(ctx: ToolContext, a: TxRefArgs) -> dict[str, Any]:
@@ -591,7 +596,7 @@ TOOLS: dict[str, ToolSpec] = {
         ToolSpec("get_transaction", "Ver una operación.", TxRefArgs, _get_transaction),
         ToolSpec(
             "create_payment",
-            "Ofertante: obtener el link oficial de Mercado Pago para pagar la tarifa.",
+            "Ofertante: generar el link oficial de Mercado Pago. El backend se lo envía directamente; no lo repitas.",
             TxRefArgs,
             _create_payment,
         ),
@@ -661,6 +666,7 @@ def execute(ctx: ToolContext, name: str, raw_arguments: str | dict[str, Any] | N
     try:
         result = spec.handler(ctx, args)
         sp.commit()
+        state_machine.apply_tool_result(ctx.conversation, name, result)
         return result
     except EvasionBlocked as e:
         # Strike already committed by enforce_or_raise (the savepoint is gone with that commit).
