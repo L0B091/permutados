@@ -8,41 +8,41 @@ backend.
 
 > Repositorio privado. Todos los derechos reservados (ver `LICENSE`).
 
-## Estado: Fase 1 (backend)
+## Estado: Fase 2 completa (backend + mensajería real)
 
 | Área | Estado |
 |---|---|
-| Modelo de datos completo (23 tablas, enums, constraints, triggers, índices parciales, FTS español) | ✅ |
-| Migración Alembic `0001` (upgrade / downgrade / `alembic check` sin drift) | ✅ |
-| Publicaciones (borrador con foto → identificación IA → datos → preview → publicar; editar, borrar, vencimiento 30d) | ✅ |
-| Validación estricta de imágenes (magic bytes, tamaño, decodificación, bombas, resolución, calidad) | ✅ |
-| Búsqueda (FTS + filtros, 5 resultados por página, "más", selección por número/ordinal/código/texto) | ✅ |
-| Ofertas (pausa del artículo, 24h para responder, aviso de 24h a ambas partes, arrepentimiento del dueño hasta el pago) | ✅ |
-| Pagos (fee ARS 3000 configurable, ventana de 24h, webhook firmado, idempotencia, conciliación, reembolsos marcados) | ✅ |
-| Liberación de contacto (WhatsApp de ambos + palabra clave única tipo `LUNA-7428`) | ✅ |
-| Anti-evasión (1er intento: advertencia explícita; 2do: suspensión pendiente de revisión del admin) | ✅ |
-| Capa Dolphin (cliente OpenAI-compatible, mock determinístico, 20 herramientas permitidas, filtros) | ✅ |
-| Admin API (JWT access+refresh con rotación y detección de reuso, RBAC, rate limiting, auditoría) | ✅ |
-| Modos de sistema ONLINE / PAUSED / EMERGENCY | ✅ |
-| Canal de WhatsApp: puntaje de atractivo, sugerencias y registro **manual** de posts | ✅ |
-| WhatsApp / Mercado Pago: interfaces + clientes HTTP + webhooks con verificación de firma | ✅ (sin credenciales reales) |
-| Procesamiento asíncrono de mensajes entrantes de WhatsApp (webhook → cola → conversación) | ⏳ Fase 2 |
+| Modelo de datos (23 tablas, enums, constraints, triggers, índices parciales, FTS español) | ✅ Fase 1 |
+| Migraciones Alembic `0001` + `0002` (upgrade / downgrade con datos / `alembic check` sin drift) | ✅ |
+| Publicaciones, imágenes, búsqueda, ofertas, pagos, liberación, anti-evasión, Admin API, modos, canal manual | ✅ Fase 1 |
+| **Motor de conversación**: webhook WhatsApp → cola durable → worker → intención → máquina de estados → Dolphin → herramientas | ✅ Fase 2 |
+| **Cliente WhatsApp Cloud API**: texto, imagen, plantilla, marcar leído, descarga de media, reintentos, idempotencia | ✅ Fase 2 |
+| **Ventana de 24h**: sesión gratis dentro de la ventana; fuera, una plantilla aprobada y el resto espera | ✅ Fase 2 |
+| **Outbox** despachado por el worker (at-least-once, backoff, `SKIP LOCKED`, estados de entrega de Meta) | ✅ Fase 2 |
+| **Mercado Pago Checkout Pro** real (preferencia ARS 3000, webhook `payment` + `merchant_order`, validaciones) | ✅ Fase 2 |
+| **Cifrado a nivel campo** de teléfonos, nombres y mensajes sensibles (AES-256-GCM + índice ciego) | ✅ Fase 2 |
+| Pruebas con credenciales sandbox reales de Meta / Mercado Pago | ⏳ requiere credenciales del dueño |
 | Instalación del servidor Dolphin | ⏳ cuando exista el servidor físico |
 | Consola Android de administración | ⏳ Fase 3 |
 
 ## Arquitectura
 
 ```
-WhatsApp Cloud API ──► /webhooks/whatsapp ──► conversation service ──► Dolphin (OpenAI-compatible)
-                                                      │                     │ tool calls (allowlist)
-                                                      ▼                     ▼
-                                              domain services ◄──── tools.execute (validación estricta)
-                                     (publications, search, offers, payments, security, channel)
-                                                      │
-Mercado Pago ──► /webhooks/mercadopago ──► payments ──┤──► PostgreSQL (fuente de verdad, auditoría)
-                                                      └──► Redis (rate limiting)
-Admin (Android, fase 3) ──► /admin/* (JWT + RBAC)       Worker (APScheduler + advisory locks): vencimientos,
-                                                         conciliación de pagos, canal
+WhatsApp Cloud API ──► /webhooks/whatsapp (firma HMAC, dedupe, cifra la identidad, responde 200 rápido)
+                              │  webhook_events (cola durable, sobre cifrado)        estados ──► notifications
+                              ▼
+               Worker: process_inbound_queue (un consumidor, orden por usuario)
+                 descarga de media ─► conversation.handle_inbound
+                      dedupe → reabre ventana 24h → estado de cuenta → rate limit → anti-evasión
+                      → validación de imagen → reconcile(estado) + detect_intent ─► Dolphin (propone)
+                                                                       │ tool calls (allowlist)
+                                                                       ▼
+                         domain services ◄── tools.execute (valida, decide)  ─► state_machine.apply_tool_result
+                                │
+                                ▼
+                    notifications (outbox) ─► Worker: dispatch_outbox ─► WhatsAppClient (texto / plantilla)
+Mercado Pago ──► /webhooks/mercadopago (firma) ─► consulta API ─► valida ─► liberación ─► outbox (cifrado)
+PostgreSQL = fuente de verdad · Redis = rate limiting · Admin (Android, fase 3) ──► /admin/* (JWT + RBAC)
 ```
 
 ```
@@ -104,6 +104,69 @@ android/admin-console/  (fase 3)
 * El texto del usuario va siempre en rol `user`; los prompts de sistema no se mezclan con datos del usuario.
 * La salida del modelo pasa por un filtro (datos de contacto, secretos).
 * Si Dolphin no responde, el bot contesta un mensaje seguro y no cambia ningún estado.
+* **Dolphin propone, el backend decide.** La intención se detecta de forma determinística
+  (`conversation/intents.py`) y el estado de la conversación vive en una máquina de estados del backend
+  (`conversation/state_machine.py`): el estado solo avanza después de una herramienta exitosa, las transiciones
+  ilegales se rechazan (p. ej. `IDLE → PUBLISHING_PREVIEW`) y en cada turno `reconcile` re-deriva el estado desde
+  la base (borrador borrado, oferta vencida, pago pendiente…). Dolphin recibe `conversation_state`,
+  `current_intent` y `expected_next` como **datos** en `BACKEND_CONTEXT`.
+* **Mensajes del backend vs. texto del modelo.** El link de pago de Mercado Pago lo envía el backend como mensaje
+  propio (canal `backend_messages`), sin pasar por el modelo ni por el filtro; el texto de Dolphin sigue
+  filtrado (un link escrito por el modelo se bloquea).
+
+## Mensajería WhatsApp (fase 2)
+
+* **Entrada:** `POST /webhooks/whatsapp` verifica `X-Hub-Signature-256`, deduplica por `message_id`, cifra la
+  identidad y el texto en un sobre (`webhook_events`) y responde enseguida. El worker
+  (`process_inbound_queue`, cada `INBOUND_POLL_SECONDS`) procesa la cola con un advisory lock (un solo consumidor →
+  orden por usuario), descarga la imagen (con reintentos, límite de tamaño y verificación sha256), corre la
+  conversación y **borra el sobre** al terminar. Errores transitorios → reintento con backoff; después de
+  `INBOUND_MAX_ATTEMPTS` → `FAILED`. Tipos no soportados (audio, video, sticker…) reciben una respuesta fija;
+  ubicaciones, un aviso (solo zona general); **tarjetas de contacto cuentan como intento de evasión**.
+* **Salida (outbox):** todo mensaje saliente es una fila de `notifications` creada en la misma transacción que el
+  cambio de dominio. `dispatch_outbox` (cada `OUTBOX_POLL_SECONDS`) toma filas con `FOR UPDATE SKIP LOCKED`, una
+  transacción por mensaje, backoff exponencial, `OUTBOX_MAX_ATTEMPTS`. Entrega *at-least-once*: el cliente no
+  reintenta envíos ante 5xx/timeout (Meta pudo haberlo aceptado); reintenta el outbox.
+* **Ventana de 24h:** cada mensaje entrante guarda `users.last_inbound_at`. Dentro de la ventana (con un margen de
+  `WHATSAPP_WINDOW_SAFETY_MINUTES`) se manda texto libre (gratis). Fuera de la ventana se manda **una sola**
+  plantilla aprobada por período de silencio (máx. 1 cada 24h) con un resumen sin datos personales, y los mensajes
+  completos quedan en `AWAITING_WINDOW` hasta que la persona responda; los que tienen vencimiento (avisos de
+  oferta/pago) pasan a `EXPIRED` si caducan antes. El error 131047 de Meta (fuera de ventana) se maneja tanto en la
+  respuesta como en los webhooks de estado (`sent/delivered/read/failed` se guardan en la notificación).
+* **Plantilla requerida en Meta:** crear y aprobar en WhatsApp Manager una plantilla **UTILITY** llamada
+  `permutados_novedad` (o la de `WHATSAPP_FALLBACK_TEMPLATE`), idioma **es_AR**, con **una** variable `{{1}}`
+  en el cuerpo. Ej.: *"Tenés una novedad en Permutados: {{1}}. Respondé este mensaje para verla."*
+* `biz_opaque_callback_data` lleva la clave de idempotencia de la notificación.
+
+## Pagos con Mercado Pago (fase 2)
+
+* `create_payment` crea una preferencia **Checkout Pro** real: 1 ítem (categoría `services`), ARS
+  `CONTACT_RELEASE_PRICE`, `binary_mode`, sin efectivo/ticket, 1 cuota, `external_reference` único,
+  `notification_url`, vencimiento = fin de la ventana de pago, `statement_descriptor`, `X-Idempotency-Key`
+  determinística. Sandbox usa `sandbox_init_point`.
+* El webhook (firma `x-signature` v1 + tolerancia de tiempo) **nunca confía en el cuerpo**: consulta
+  `GET /v1/payments/{id}` (o `GET /merchant_orders/{id}` → pagos) y valida estado, monto, moneda,
+  `external_reference`, operación, `live_mode` (en producción se rechazan pagos sandbox) y, si se configura,
+  `MERCADOPAGO_COLLECTOR_ID`. Discrepancias → `PAYMENT_MISMATCH` (evento de seguridad + auditoría), sin liberar.
+  Procesamiento idempotente (mismo pago dos veces = una liberación).
+
+## Cifrado de datos personales (fase 2)
+
+* `ENCRYPTION_KEY` (32 bytes, base64 urlsafe) es **obligatoria**. AES-256-GCM con nonce aleatorio, el *propósito*
+  como dato asociado (un cifrado de teléfono no sirve como nombre), claves derivadas con HKDF y formato versionado
+  `v1.<kid>.<datos>`.
+* Cifrado: `users.whatsapp_enc`, `users.display_name_enc`, la evidencia de mensajes bloqueados por anti-evasión
+  (`messages.body_enc`) y los mensajes de liberación (`notifications.body_enc`), además del sobre de la cola de
+  entrada. Para buscar usuarios se usa un **índice ciego** HMAC-SHA256 (`users.whatsapp_hash`); se guardan los
+  últimos 4 dígitos para mostrar `•••1234`.
+* **Descifrado solo en `app/services/users/pii.py`** (un test de arquitectura AST lo impone): al liberar el contacto,
+  en memoria al entregar el mensaje por WhatsApp, y en vistas de admin auditadas de un solo usuario (nombre y
+  evidencia de evasión, necesarias para revisar suspensiones). Los listados de admin muestran el número enmascarado
+  y la búsqueda por número es exacta (vía hash).
+* Migración `0002` cifra los datos existentes y elimina las columnas en texto plano (el downgrade los descifra).
+* Rotación: `ENCRYPTION_KEY=<nueva>`, `ENCRYPTION_OLD_KEYS=<vieja>`, worker detenido, y
+  `python ../scripts/rotate_encryption_key.py` (re-cifra y re-indexa en una transacción).
+* **Perder la clave = perder los teléfonos.** Guardarla fuera de los backups de la base.
 
 ## Desarrollo local (sin Docker)
 
@@ -111,7 +174,7 @@ Requisitos: Python 3.13, PostgreSQL 17, Redis 7+.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r backend/requirements-dev.txt
-cp .env.example .env    # completar
+cp .env.example .env    # completar; ENCRYPTION_KEY es obligatoria (ver comando en .env.example)
 createdb permutados && createdb permutados_test
 cd backend
 ../.venv/bin/alembic upgrade head
@@ -146,8 +209,20 @@ tocar código.
 ## Tests
 
 Corren contra **PostgreSQL y Redis reales** (la base de tests se borra y se recrea; la migración se prueba con
-upgrade → downgrade → upgrade al inicio). Dolphin, Mercado Pago y el envío por WhatsApp se simulan con dobles
-determinísticos.
+upgrade → downgrade → upgrade al inicio, y la `0002` con datos reales ida y vuelta).
+
+Qué es real y qué es simulado en los tests:
+
+* **Real:** PostgreSQL, Redis, migraciones, toda la lógica de dominio, la API HTTP (TestClient), la verificación de
+  firmas de los webhooks de WhatsApp y Mercado Pago (payloads con la forma real de Meta/MP, firmados), la cola de
+  entrada, el outbox, la máquina de estados, el cifrado, la construcción de requests HTTP de los clientes de
+  WhatsApp y Mercado Pago (verificada con `httpx.MockTransport`: URLs, headers, cuerpos, reintentos, errores).
+* **Simulado:** el modelo Dolphin (`MockDolphinClient` con guiones por turno), la red hacia Meta
+  (`RecordingWhatsAppClient`) y hacia Mercado Pago (`FakeGateway`). No se usaron credenciales reales.
+* `tests/e2e/test_whatsapp_e2e.py` recorre el flujo completo solo con webhooks: foto → identificación →
+  datos → vista previa → publicar → búsqueda (5) → "más" → selección → oferta (avisos de 24h a ambos) →
+  ACEPTAR → PAGAR (link enviado por el backend) → webhook MP firmado → ambos reciben número + palabra clave, y
+  verifica que la base no contiene ningún teléfono ni nombre en texto plano.
 
 ```bash
 cd backend && ../.venv/bin/pytest -q
@@ -157,8 +232,9 @@ cd backend && ../.venv/bin/pytest -q
 
 ## Plan de fases
 
-1. **Fase 1 (este repo):** backend, modelo, servicios, capa Dolphin, Admin API, webhooks, tests.
-2. **Fase 2:** procesamiento real de mensajes WhatsApp (cola + worker + envío de notificaciones del outbox),
-   media download, pruebas con credenciales sandbox de Meta y Mercado Pago, cifrado de teléfonos a nivel campo.
+1. **Fase 1 ✅:** backend, modelo, servicios, capa Dolphin, Admin API, webhooks, tests.
+2. **Fase 2 ✅:** motor de conversación (cola + worker + intención + máquina de estados), cliente WhatsApp Cloud
+   API con ventana de 24h y plantilla, outbox, Mercado Pago Checkout Pro, cifrado de datos personales.
+   Pendiente del dueño: credenciales sandbox de Meta/MP y aprobación de la plantilla `permutados_novedad`.
 3. **Fase 3:** consola Android de administración.
 4. **Fase 4:** servidor Dolphin físico, ajuste de prompts con conversaciones reales.
