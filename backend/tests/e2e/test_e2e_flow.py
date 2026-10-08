@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from app.core import db as dbmod
 from app.models.channel import ChannelPost
-from app.models.enums import AdminRole, ChannelPostStatus, ItemStatus, OfferStatus, TransactionStatus
+from app.models.enums import AdminRole, ChannelPostStatus, ItemChannelStatus, ItemStatus, OfferStatus, TransactionStatus
 from app.models.item import Item
 from app.models.offer import Offer, Transaction
 from app.models.payment import Payment
@@ -173,6 +173,18 @@ def test_full_flow_publish_search_offer_accept_pay_release(db, make_user, publis
     assert tx.security_keyword in to_bidder and tx.security_keyword in to_owner
     assert db.get(Item, item.id).status == ItemStatus.COMPLETED
     assert db.get(ChannelPost, post.id).status == ChannelPostStatus.REMOVAL_PENDING
+
+    # channel updated -> the admin sees the removal, deletes the post by hand and confirms -> operation finished
+    pending = channel.removals_needed(db)["removal_pending"]
+    assert [p["id"] for p in pending] == [post.id]
+    channel.confirm_removed(db, admin_id, post.id)
+    db.commit()
+    db.expire_all()
+    assert db.get(ChannelPost, post.id).status == ChannelPostStatus.REMOVED
+    done = db.get(Item, item.id)
+    assert done.status == ItemStatus.COMPLETED and done.channel_status == ItemChannelStatus.REMOVED
+    assert channel.removals_needed(db)["removal_pending"] == []
+    assert db.get(Transaction, tx.id).status == TransactionStatus.CONTACT_RELEASED  # terminal
 
     # the completed item no longer shows up in searches
     other = make_user()
