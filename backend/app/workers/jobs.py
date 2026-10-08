@@ -1,0 +1,113 @@
+"""Periodic jobs. Each is idempotent, runs in its own transaction and is protected by a PostgreSQL advisory
+lock so several worker replicas never run the same job concurrently. After a restart the scheduler simply
+runs them again: every job derives its work from PostgreSQL state (recover -> reconcile -> continue)."""
+
+from __future__ import annotations
+
+import logging
+import zlib
+from collections.abc import Callable
+from datetime import timedelta
+
+from sqlalchemy import select, text
+from sqlalchemy.orm import Session
+
+from app.core.clock import utcnow
+from app.core.db import session_scope
+from app.models.enums import ActorType, ItemStatus
+from app.models.item import Item
+from app.services.audit.service import audit
+from app.services.channel import service as channel
+from app.services.notifications import templates
+from app.services.notifications.service import enqueue
+from app.services.offers import service as offers
+from app.services.payments import service as payments
+from app.services.publications.state import transition_item
+from app.services.system import config_service as cfg
+
+log = logging.getLogger(__name__)
+
+
+def warn_expiring_publications(session: Session, now=None) -> int:
+    now = now or utcnow()
+    days = int(cfg.get_value(session, "publication_expiry_warning_days"))
+    if days <= 0:
+        return 0
+    items = (
+        session.execute(
+            select(Item)
+            .where(
+                Item.status == ItemStatus.PUBLISHED,
+                Item.expires_at <= now + timedelta(days=days),
+                Item.expires_at > now,
+                Item.expiry_warning_sent_at.is_(None),
+            )
+            .with_for_update(skip_locked=True)
+        )
+        .scalars()
+        .all()
+    )
+    for it in items:
+        it.expiry_warning_sent_at = now
+        enqueue(
+            session,
+            user_id=it.owner_id,
+            kind="PUBLICATION_EXPIRY_WARNING",
+            body=templates.publication_expiry_warning(
+                item_code=it.public_id, title=it.title or "", expires_at=it.expires_at
+            ),
+            idempotency_key=f"item:{it.public_id}:expiry_warning",
+            template_name="publication_expiring",
+        )
+    return len(items)
+
+
+def expire_publications(session: Session, now=None) -> int:
+    """PUBLISHED items past expires_at -> EXPIRED (emits ITEM_EXPIRED -> channel removal flag).
+    RESERVED items are left until their offer resolves; they expire on a later run."""
+    now = now or utcnow()
+    items = (
+        session.execute(
+            select(Item)
+            .where(Item.status == ItemStatus.PUBLISHED, Item.expires_at <= now)
+            .with_for_update(skip_locked=True)
+        )
+        .scalars()
+        .all()
+    )
+    for it in items:
+        transition_item(session, it, ItemStatus.EXPIRED, actor_type=ActorType.WORKER, reason="30_DAYS")
+        enqueue(
+            session,
+            user_id=it.owner_id,
+            kind="PUBLICATION_EXPIRED",
+            body=templates.publication_expired(item_code=it.public_id, title=it.title or ""),
+            idempotency_key=f"item:{it.public_id}:expired",
+        )
+    return len(items)
+
+
+def run_with_lock(name: str, fn: Callable[[Session], int]) -> int | None:
+    key = zlib.crc32(f"permutados:{name}".encode())
+    with session_scope() as session:
+        if not session.execute(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": key}).scalar():
+            return None
+        n = fn(session)
+        if n:
+            audit(session, "WORKER_JOB", actor_type=ActorType.WORKER, details={"job": name, "affected": n})
+        return n
+
+
+def job_definitions(gateway=None) -> dict[str, tuple[Callable[[Session], int], int]]:
+    """name -> (function, interval seconds)."""
+    jobs: dict[str, tuple[Callable[[Session], int], int]] = {
+        "expire_pending_offers": (offers.expire_pending_offers, 60),
+        "expire_payment_windows": (offers.expire_payment_windows, 60),
+        "release_deferred": (payments.release_deferred, 60),
+        "warn_expiring_publications": (warn_expiring_publications, 3600),
+        "expire_publications": (expire_publications, 300),
+        "channel_reconciliation": (lambda s: channel.reconcile(s)["flagged"], 600),
+    }
+    if gateway is not None:
+        jobs["reconcile_pending_payments"] = (lambda s: payments.reconcile_pending_payments(s, gateway), 300)
+    return jobs
